@@ -252,11 +252,11 @@ def gen_rays(poses, width, height, z_near, z_far, focal=None, c=None, norm_dir=T
     cam_unproj_map = (
         unproj_map(width, height, focal, c=c, device=device, norm_dir=norm_dir)
         .expand(num_images, -1, -1, -1)
-    )
-    cam_centers = poses[:, None, None, :3, 3].expand(-1, height, width, -1)
+    ) # x, y, 1
+    cam_centers = poses[:, None, None, :3, 3].expand(-1, height, width, -1) # t
     cam_raydir = torch.matmul(
         poses[:, None, None, :3, :3], cam_unproj_map.unsqueeze(-1)
-    )[:, :, :, :, 0]
+    )[:, :, :, :, 0] # R * [x y 1]
 
     cam_nears = (
         torch.tensor(z_near, device=device)
@@ -270,7 +270,7 @@ def gen_rays(poses, width, height, z_near, z_far, focal=None, c=None, norm_dir=T
     )
     return torch.cat(
         (cam_centers, cam_raydir, cam_nears, cam_fars), dim=-1
-    )  # (B, H, W, 8)
+    )  # (B, H, W, 8) [tx, ty, tz, x, y, 1, zn, zf]
 
 
 def trans_t(t):

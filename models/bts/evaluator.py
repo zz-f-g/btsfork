@@ -1,3 +1,4 @@
+import ipdb
 import math
 
 import torch
@@ -18,6 +19,10 @@ from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, Rando
 from utils.base_evaluator import base_evaluation
 from utils.metrics import MeanMetric
 from utils.projection_operations import distance_to_z
+# import dsine.projects.dsine.config as dsine_config
+import dsine.utils.utils as dsine_utils
+from dsine.models.dsine.v02 import DSINE_v02 as DSINE
+from torchvision import transforms
 
 IDX = 0
 
@@ -36,6 +41,12 @@ class BTSWrapper(nn.Module):
         self.lpips_vgg = lpips.LPIPS(net="vgg")
 
         self.depth_scaling = config.get("depth_scaling", None)
+        # dsine_args = dsine_config.get_args(test=True)
+        dsine_args = config.get("dsine_pt")
+        self.normal_model = DSINE(dsine_args).to("cuda")
+        self.normal_model = dsine_utils.load_checkpoint(dsine_args.ckpt_path, self.normal_model)
+        self.normal_model.eval()
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
     @staticmethod
     def get_loss_metric_names():
@@ -43,6 +54,7 @@ class BTSWrapper(nn.Module):
 
     def forward(self, data):
         data = dict(data)
+        # ipdb.set_trace() # 1
         images = torch.stack(data["imgs"], dim=1)                           # n, v, c, h, w
         poses = torch.stack(data["poses"], dim=1)                           # n, v, 4, 4 w2c
         projs = torch.stack(data["projs"], dim=1)                           # n, v, 4, 4 (-1, 1)
@@ -56,23 +68,28 @@ class BTSWrapper(nn.Module):
 
         ids_encoder = [0]
 
+        # ipdb.set_trace() # 4
         self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
         self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_encoder, )
 
+        # ipdb.set_trace() # 5
         all_rays, all_rgb_gt = self.sampler.sample(images * .5 + .5, poses, projs)
 
         data["fine"] = []
         data["coarse"] = []
 
         self.renderer.net.set_scale(0)
-        render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True)
+        # ipdb.set_trace() # 6
+        render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_z_samps=True)
 
+        # ipdb.set_trace() # 7
         if "fine" not in render_dict:
             render_dict["fine"] = dict(render_dict["coarse"])
 
         render_dict["rgb_gt"] = all_rgb_gt
         render_dict["rays"] = all_rays
 
+        # ipdb.set_trace() # 8
         render_dict = self.sampler.reconstruct(render_dict)
 
         render_dict["coarse"]["depth"] = distance_to_z(render_dict["coarse"]["depth"], projs)
@@ -85,6 +102,27 @@ class BTSWrapper(nn.Module):
 
         data["z_near"] = torch.tensor(self.z_near, device=images.device)
         data["z_far"] = torch.tensor(self.z_far, device=images.device)
+
+        rgbleft = data["coarse"][0]["rgb"][0, 0, :, :, 0, :]
+        normleft = data["coarse"][0]["normal"][0, 0, :, :, 0, :]
+        rgbvis = rgbleft.detach().cpu().numpy()
+        normvis = ((normleft / normleft.norm(dim=-1, keepdim=True) + 1) / 2).detach().cpu().numpy()
+        rgbleft = rgbleft.permute(2, 0, 1).unsqueeze(0)
+        _, _, orig_H, orig_W = rgbleft.shape
+        lrtb = dsine_utils.get_padding(orig_H, orig_W)
+        rgbleft = F.pad(rgbleft, lrtb, mode="constant", value=0.0)
+        rgbleft = self.normalize(rgbleft)
+
+        intrins = data["projs"][0] * torch.tensor([orig_W, orig_H, 1], device="cuda").view(1, 3, 1)
+        intrins[:, 0, 2] += lrtb[0]
+        intrins[:, 1, 2] += lrtb[2]
+
+        ipdb.set_trace()
+        pred_norm = self.normal_model(rgbleft, intrins=intrins)[-1]
+        pred_norm = pred_norm[:, :, lrtb[2]:lrtb[2]+orig_H, lrtb[0]:lrtb[0]+orig_W]
+        # pred_norm = pred_norm.detach().cpu().permute(0, 2, 3, 1).numpy()
+        # pred_norm = (((pred_norm + 1) * 0.5) * 255)
+        # ipdb.set_trace()
 
         data.update(self.compute_depth_metrics(data))
         data.update(self.compute_nvs_metrics(data))

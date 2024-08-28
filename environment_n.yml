@@ -1,0 +1,29 @@
+name: btsnew
+channels:
+  - pytorch
+  - nvidia
+dependencies:
+  - python
+  - pytorch
+  - torchvision
+  - pytorch-cuda
+  - pip
+  - pip:
+      - tensorflow-datasets
+      - pytorch-ignite
+      - hydra-core
+      - omegaconf
+      - h5py
+      - lpips
+      - dotmap
+      - dotdict
+      - pytorch-msssim
+      - plyfile
+      - tensorflow # for tensorboard (but it seems to be much faster with tensorflow)
+      - opencv-python
+      - matplotlib
+      - moviepy
+      - mediapy
+      - scipy
+      - scikit-image
+      - notebook

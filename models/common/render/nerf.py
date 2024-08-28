@@ -4,6 +4,7 @@ References:
 https://github.com/bmild/nerf
 https://github.com/kwea123/nerf_pl
 """
+import ipdb
 import torch
 import torch.autograd.profiler as profiler
 from dotmap import DotMap
@@ -23,6 +24,7 @@ class _RenderWrapper(torch.nn.Module):
                 torch.zeros(0, device=rays.device),
             )
 
+        # ipdb.set_trace() # 6.1
         outputs = self.renderer(
             self.net,
             rays,
@@ -41,6 +43,7 @@ class _RenderWrapper(torch.nn.Module):
                 depth = outputs.coarse.depth
             return rgb, depth
         else:
+            # ipdb.set_trace() # 6.2
             # Make DotMap to dict to support DataParallel
             return outputs.toDict()
 
@@ -222,18 +225,21 @@ class NeRFRenderer(torch.nn.Module):
         with profiler.record_function("renderer_composite"):
             B, K = z_samp.shape
 
+            # 6.1.2.1
             deltas = z_samp[:, 1:] - z_samp[:, :-1]  # (B, K-1)
             delta_inf = 1e10 * torch.ones_like(deltas[:, :1])  # infty (B, 1)
             # delta_inf = rays[:, -1:] - z_samp[:, -1:]
             deltas = torch.cat([deltas, delta_inf], -1)  # (B, K)
 
+            # 6.1.2.2
             # (B, K, 3)
             points = rays[:, None, :3] + z_samp.unsqueeze(2) * rays[:, None, 3:6]
             points = points.reshape(-1, 3)  # (B*K, 3)
 
             use_viewdirs = hasattr(model, "use_viewdirs") and model.use_viewdirs
 
-            rgbs_all, invalid_all, sigmas_all = [], [], []
+            rgbs_all, invalid_all, sigmas_all, sigmagrads_all = [], [], [], []
+            # 6.1.2.3
             if sb > 0:
                 points = points.reshape(
                     sb, -1, 3
@@ -261,25 +267,30 @@ class NeRFRenderer(torch.nn.Module):
                     invalid_all.append(invalid)
                     sigmas_all.append(sigmas)
             else:
+                # 6.1.2.4
                 for pnts in split_points:
-                    rgbs, invalid, sigmas = model(pnts, coarse=coarse)
+                    rgbs, invalid, sigmas, sigmagrads = model(pnts, coarse=coarse)
                     rgbs_all.append(rgbs)
                     invalid_all.append(invalid)
                     sigmas_all.append(sigmas)
+                    sigmagrads_all.append(sigmagrads)
             points = None
             viewdirs = None
             # (B*K, 4) OR (SB, B'*K, 4)
             rgbs = torch.cat(rgbs_all, dim=eval_batch_dim)
             invalid = torch.cat(invalid_all, dim=eval_batch_dim)
             sigmas = torch.cat(sigmas_all, dim=eval_batch_dim)
+            sigmagrads = torch.cat(sigmagrads_all, dim=eval_batch_dim)
 
             rgbs = rgbs.reshape(B, K, -1)  # (B, K, 4 or 5)
             invalid = invalid.reshape(B, K, -1)
             sigmas = sigmas.reshape(B, K)
+            sigmagrads = sigmagrads.reshape(B, K, -1)
 
             if self.training and self.noise_std > 0.0:
                 sigmas = sigmas + torch.randn_like(sigmas) * self.noise_std
 
+            # ipdb.set_trace() # 6.1.2.5
             alphas = 1 - torch.exp(-deltas.abs() * torch.relu(sigmas))  # (B, K) (delta should be positive anyways)
 
             if self.hard_alpha_cap:
@@ -290,18 +301,21 @@ class NeRFRenderer(torch.nn.Module):
             alphas_shifted = torch.cat(
                 [torch.ones_like(alphas[:, :1]), 1 - alphas + 1e-10], -1
             )  # (B, K+1) = [1, a1, a2, ...]
+            # 6.1.2.6
             T = torch.cumprod(alphas_shifted, -1)  # (B)
             weights = alphas * T[:, :-1]  # (B, K)
             # alphas = None
             alphas_shifted = None
 
             rgb_final = torch.sum(weights.unsqueeze(-1) * rgbs, -2)  # (B, 3)
+            normal_final = torch.sum(weights.unsqueeze(-1) * sigmagrads, -2)  # (B, 3)
             depth_final = torch.sum(weights * z_samp, -1)  # (B)
 
             if self.white_bkgd:
                 # White background
                 pix_alpha = weights.sum(dim=1)  # (B), pixel alpha
                 rgb_final = rgb_final + 1 - pix_alpha.unsqueeze(-1)  # (B, 3)
+            # 6.1.2.7
             return (
                 weights,
                 rgb_final,
@@ -309,7 +323,9 @@ class NeRFRenderer(torch.nn.Module):
                 alphas,
                 invalid,
                 z_samp,
-                rgbs
+                rgbs,
+                normal_final,
+                sigmagrads,
             )
 
     def forward(
@@ -335,6 +351,7 @@ class NeRFRenderer(torch.nn.Module):
             rays = rays.reshape(-1, 8)  # (SB * B, 8)
 
             if sample_from_dist is None:
+                # ipdb.set_trace() # 6.1.1
                 z_coarse = self.sample_coarse(rays)  # (B, Kc)
             else:
                 prop_weights, prop_z_samp = sample_from_dist
@@ -343,13 +360,21 @@ class NeRFRenderer(torch.nn.Module):
                 prop_z_samp = prop_z_samp.reshape(-1, n_samples)
                 z_coarse = self.sample_coarse_from_dist(rays, prop_weights, prop_z_samp)
                 z_coarse, _ = torch.sort(z_coarse, dim=-1)
+            # ipdb.set_trace() # 6.1.2
             coarse_composite = self.composite(
                 model, rays, z_coarse, coarse=True, sb=superbatch_size,
             )
 
+            # ipdb.set_trace() # 6.1.3
             outputs = DotMap(
                 coarse=self._format_outputs(
-                    coarse_composite, superbatch_size, want_weights=want_weights, want_alphas=want_alphas, want_z_samps=want_z_samps, want_rgb_samps=want_rgb_samps
+                    coarse_composite,
+                    superbatch_size,
+                    want_weights=want_weights,
+                    want_alphas=want_alphas,
+                    want_z_samps=want_z_samps,
+                    want_rgb_samps=want_rgb_samps,
+                    want_normal_samps=True,
                 ),
             )
 
@@ -375,12 +400,20 @@ class NeRFRenderer(torch.nn.Module):
             return outputs
 
     def _format_outputs(
-        self, rendered_outputs, superbatch_size, want_weights=False, want_alphas=False, want_z_samps=False, want_rgb_samps=False
+        self,
+        rendered_outputs,
+        superbatch_size,
+        want_weights=False,
+        want_alphas=False,
+        want_z_samps=False,
+        want_rgb_samps=False,
+        want_normal_samps=False,
     ):
-        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps = rendered_outputs
+        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps, normal_final, normal_samps = rendered_outputs
         n_smps = weights.shape[-1]
         out_d_rgb = rgb_final.shape[-1]
         out_d_i = invalid.shape[-1]
+        out_d_n = normal_final.shape[-1]
         if superbatch_size > 0:
             rgb_final = rgb_final.reshape(superbatch_size, -1, out_d_rgb)
             depth = depth.reshape(superbatch_size, -1)
@@ -389,7 +422,14 @@ class NeRFRenderer(torch.nn.Module):
             invalid = invalid.reshape(superbatch_size, -1, n_smps, out_d_i)
             z_samps = z_samps.reshape(superbatch_size, -1, n_smps)
             rgb_samps = rgb_samps.reshape(superbatch_size, -1, n_smps, out_d_rgb)
-        ret_dict = DotMap(rgb=rgb_final, depth=depth, invalid=invalid)
+            normal_final = normal_final.reshape(superbatch_size, -1, out_d_n)
+            normal_samps = normal_samps.reshape(superbatch_size, -1, n_smps, out_d_n)
+        ret_dict = DotMap(
+            rgb=rgb_final,
+            depth=depth,
+            invalid=invalid,
+            normal=normal_final,
+        )
         if want_weights:
             ret_dict.weights = weights
         if want_alphas:
@@ -398,6 +438,8 @@ class NeRFRenderer(torch.nn.Module):
             ret_dict.z_samps = z_samps
         if want_rgb_samps:
             ret_dict.rgb_samps = rgb_samps
+        if want_normal_samps:
+            ret_dict.normal_samps = normal_samps
         return ret_dict
 
     def sched_step(self, steps=1):

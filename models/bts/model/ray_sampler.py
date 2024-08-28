@@ -1,3 +1,4 @@
+import ipdb
 import torch
 from omegaconf import ListConfig
 
@@ -131,12 +132,16 @@ class PatchRaySampler(RaySampler):
         all_rgb_gt = []
         all_rays = []
 
+        # 5.1
         for n_ in range(n):
+            # 5.1.1
             focals = projs[n_, :, [0, 1], [0, 1]]
             centers = projs[n_, :, [0, 1], [2, 2]]
 
+            # 5.1.2 [tx, ty, tz, x, y, z, zn, zf]
             rays = util.gen_rays(poses[n_].view(-1, 4, 4), w, h, focal=focals, c=centers, z_near=self.z_near, z_far=self.z_far)
 
+            # 5.1.3 64(v) * 8(h) * 8(w)
             patch_coords_v = torch.randint(0, v, (self._patch_count, ))
             patch_coords_y = torch.randint(0, h-self.patch_size_y, (self._patch_count, ))
             patch_coords_x = torch.randint(0, w-self.patch_size_x, (self._patch_count, ))
@@ -156,6 +161,7 @@ class PatchRaySampler(RaySampler):
             all_rgb_gt.append(sample_rgb_gt)
             all_rays.append(sample_rays)
 
+        # 5.2
         all_rgb_gt = torch.stack(all_rgb_gt)
         all_rays = torch.stack(all_rays)
 
@@ -270,11 +276,13 @@ class ImageRaySampler(RaySampler):
         c_weights = coarse["weights"]
         c_depth = coarse["depth"]
         c_invalid = coarse["invalid"]
+        c_normal = coarse["normal"]
 
         f_rgb = fine["rgb"]  # n, n_pts, v * 3
         f_weights = fine["weights"]
         f_depth = fine["depth"]
         f_invalid = fine["invalid"]
+        f_normal = fine["normal"]
 
         n, n_pts, v_c = c_rgb.shape
         v_in = n_pts // (self.height * self.width)
@@ -287,11 +295,13 @@ class ImageRaySampler(RaySampler):
         coarse["weights"] = c_weights.view(n, v_in, self.height, self.width, c_n_smps)
         coarse["depth"] = c_depth.view(n, v_in, self.height, self.width)
         coarse["invalid"] = c_invalid.view(n, v_in, self.height, self.width, c_n_smps, v_render)
+        coarse["normal"] = c_normal.view(n, v_in, self.height, self.width, v_render, 3)
 
         fine["rgb"] = f_rgb.view(n, v_in, self.height, self.width, v_render, channels)
         fine["weights"] = f_weights.view(n, v_in, self.height, self.width, f_n_smps)
         fine["depth"] = f_depth.view(n, v_in, self.height, self.width)
         fine["invalid"] = f_invalid.view(n, v_in, self.height, self.width, f_n_smps, v_render)
+        fine["normal"] = f_normal.view(n, v_in, self.height, self.width, v_render, 3)
 
         if "alphas" in coarse:
             c_alphas = coarse["alphas"]
@@ -310,6 +320,12 @@ class ImageRaySampler(RaySampler):
             f_rgb_samps = fine["rgb_samps"]
             coarse["rgb_samps"] = c_rgb_samps.view(n, v_in, self.height, self.width, c_n_smps, v_render, channels)
             fine["rgb_samps"] = f_rgb_samps.view(n, v_in, self.height, self.width, f_n_smps, v_render, channels)
+
+        if "normal_samps" in coarse:
+            c_normal_samps = coarse["normal_samps"]
+            f_normal_samps = fine["normal_samps"]
+            coarse["normal_samps"] = c_normal_samps.view(n, v_in, self.height, self.width, c_n_smps, v_render, channels)
+            fine["normal_samps"] = f_normal_samps.view(n, v_in, self.height, self.width, f_n_smps, v_render, channels)
 
         render_dict["coarse"] = coarse
         render_dict["fine"] = fine

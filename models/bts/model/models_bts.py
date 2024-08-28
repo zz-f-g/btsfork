@@ -2,6 +2,8 @@
 Main model implementation
 """
 
+# import ipdb
+from torch.func import vmap, grad
 import torch
 import torch.autograd.profiler as profiler
 import torch.nn.functional as F
@@ -71,7 +73,8 @@ class BTSNet(torch.nn.Module):
             poses_w2c_encoder = poses_w2c
             ids_encoder = list(range(len(images)))
         else:
-            images_encoder = images[:, ids_encoder]
+            # 4.1
+            images_encoder = images[:, ids_encoder] # Use image at [-1, 1] as input for ENC
             Ks_encoder = Ks[:, ids_encoder]
             poses_w2c_encoder = poses_w2c[:, ids_encoder]
 
@@ -86,6 +89,7 @@ class BTSNet(torch.nn.Module):
             poses_w2c_render = poses_w2c
             ids_render = list(range(len(images)))
         else:
+            # 4.2
             images_render = images[:, ids_render]
             Ks_render = Ks[:, ids_render]
             poses_w2c_render = poses_w2c[:, ids_render]
@@ -117,14 +121,17 @@ class BTSNet(torch.nn.Module):
         if do_flip:
             images_encoder = torch.flip(images_encoder, dims=(-1, ))
 
+        # 4.3
         image_latents_ms = self.encoder(images_encoder.view(n * nv, c, h, w))
 
         if do_flip:
             image_latents_ms = [torch.flip(il, dims=(-1, )) for il in image_latents_ms]
 
         _, _, h_, w_ = image_latents_ms[0].shape
+        # 4.4
         image_latents_ms = [F.interpolate(image_latents, (h_, w_)).view(n, nv, c_l, h_, w_) for image_latents in image_latents_ms]
 
+        # 4.5
         self.grid_f_features = image_latents_ms
         self.grid_f_Ks = Ks_encoder
         self.grid_f_poses_w2c = poses_w2c_encoder
@@ -144,15 +151,15 @@ class BTSNet(torch.nn.Module):
 
         xyz = xyz.unsqueeze(1)  # (n, 1, pts, 3)
         ones = torch.ones_like(xyz[..., :1])
-        xyz = torch.cat((xyz, ones), dim=-1)
-        xyz_projected = ((self.grid_f_poses_w2c[:, :nv, :3, :]) @ xyz.permute(0, 1, 3, 2))
-        distance = torch.norm(xyz_projected, dim=-2).unsqueeze(-1)
-        xyz_projected = (self.grid_f_Ks[:, :nv] @ xyz_projected).permute(0, 1, 3, 2)
-        xy = xyz_projected[:, :, :, [0, 1]]
-        z = xyz_projected[:, :, :, 2:3]
+        xyz = torch.cat((xyz, ones), dim=-1) # (n, 1, pts, 4)
+        xyz_projected = ((self.grid_f_poses_w2c[:, :nv, :3, :]) @ xyz.permute(0, 1, 3, 2)) # 612411 (n, nv, 3, pts)
+        distance = torch.norm(xyz_projected, dim=-2).unsqueeze(-1) # (n, nv, pts) ?
+        xyz_projected = (self.grid_f_Ks[:, :nv] @ xyz_projected).permute(0, 1, 3, 2) # (n, nv, pts, 3)
+        xy = xyz_projected[:, :, :, [0, 1]] # (n, nv, pts, 2)
+        z = xyz_projected[:, :, :, 2:3] # (n, nv, pts, 1)
 
-        xy = xy / z.clamp_min(EPS)
-        invalid = (z <= EPS) | (xy[:, :, :, :1] < -1) | (xy[:, :, :, :1] > 1) | (xy[:, :, :, 1:2] < -1) | (xy[:, :, :, 1:2] > 1)
+        xy = xy / z.clamp_min(EPS) # 612412
+        invalid = (z <= EPS) | (xy[:, :, :, :1] < -1) | (xy[:, :, :, :1] > 1) | (xy[:, :, :, 1:2] < -1) | (xy[:, :, :, 1:2] > 1) # 612413 (n, nv, pts, 1)
 
         if self.code_mode == "z":
             # Get z into [-1, 1] range
@@ -161,7 +168,7 @@ class BTSNet(torch.nn.Module):
             else:
                 z = (z - self.d_min) / (self.d_max - self.d_min)
             z = 2 * z - 1
-            xyz_projected = torch.cat((xy, z), dim=-1)
+            xyz_projected = torch.cat((xy, z), dim=-1) # (n, nv, pts, 3)
         elif self.code_mode == "distance":
             if self.inv_z:
                 distance = (1 / distance.clamp_min(EPS) - 1 / self.d_max) / (1 / self.d_min - 1 / self.d_max)
@@ -169,19 +176,19 @@ class BTSNet(torch.nn.Module):
                 distance = (distance - self.d_min) / (self.d_max - self.d_min)
             distance = 2 * distance - 1
             xyz_projected = torch.cat((xy, distance), dim=-1)
-        xyz_code = self.code_xyz(xyz_projected.view(n * nv * n_pts, -1)).view(n, nv, n_pts, -1)
+        xyz_code = self.code_xyz(xyz_projected.view(n * nv * n_pts, -1)).view(n, nv, n_pts, -1) # 612414
 
-        feature_map = self.grid_f_features[self._scale][:, :nv]
+        feature_map = self.grid_f_features[self._scale][:, :nv] # 612415 (n, nv, c, h, w)
         # These samples are from different scales
         if self.learn_empty:
             empty_feature_expanded = self.empty_feature.view(1, 1, 1, c).expand(n, nv, n_pts, c)
 
-        sampled_features = F.grid_sample(feature_map.view(n * nv, c, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c, n_pts).permute(0, 1, 3, 2)
+        sampled_features = F.grid_sample(feature_map.view(n * nv, c, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c, n_pts).permute(0, 1, 3, 2) # 612416 (n, nv, n_pts, c)
 
         if self.learn_empty:
             sampled_features[invalid.expand(-1, -1, -1, c)] = empty_feature_expanded[invalid.expand(-1, -1, -1, c)]
 
-        sampled_features = torch.cat((sampled_features, xyz_code), dim=-1)
+        sampled_features = torch.cat((sampled_features, xyz_code), dim=-1) # 612417
 
         # If there are multiple frames with predictions, reduce them.
         # TODO: Technically, this implementations should be improved if we use multiple frames.
@@ -280,6 +287,7 @@ class BTSNet(torch.nn.Module):
                 nv = len(self.grid_c_combine)
 
             # Sampled features all has shape: scales [n, n_pts, c + xyz_code]
+            # ipdb.set_trace() # 61241
             sampled_features, invalid_features = self.sample_features(xyz, use_single_featuremap=not only_density)                  # invalid features (n, n_pts, 1)
             sampled_features = sampled_features.reshape(n * n_pts, -1)
 
@@ -291,8 +299,9 @@ class BTSNet(torch.nn.Module):
 
             # Run main NeRF network
             if coarse or self.mlp_fine is None:
+                # ipdb.set_trace() # 61242
                 mlp_output = self.mlp_coarse(
-                    mlp_input,
+                    mlp_input, # (n, n_pts, -1)
                     combine_inner_dims=(n_pts,),
                     combine_index=combine_index,
                     dim_size=dim_size,
@@ -309,8 +318,10 @@ class BTSNet(torch.nn.Module):
             mlp_output = mlp_output.reshape(n, n_pts, self._d_out)
 
             if self.sample_color:
+                # ipdb.set_trace() # 61243
                 sigma = mlp_output[..., :1]
                 sigma = F.softplus(sigma)
+                # ipdb.set_trace() # 61244
                 rgb, invalid_colors = self.sample_colors(xyz)                               # (n, nv, pts, 3)
             else:
                 sigma = mlp_output[..., :1]
@@ -335,4 +346,113 @@ class BTSNet(torch.nn.Module):
             else:
                 rgb = torch.zeros((n, n_pts, nv * 3), device=sigma.device)
                 invalid = invalid_features.to(sigma.dtype)
-        return rgb, invalid, sigma
+        # ipdb.set_trace()  # sigma grad
+        # grad_sigma = torch.autograd.grad(sigma[0, 0], xyz)
+        g = get_sigma_grad(
+            xyz,
+            self.grid_f_features[self._scale][:, :nv],
+            self.grid_f_poses_w2c,
+            self.grid_f_Ks,
+            self.d_min,
+            self.d_max,
+            n_freqs=6,
+            freq_factor=1.5,
+            network=self.mlp_coarse,
+        )
+        # get_normal_each_pt = lambda xyz_: grad(get_sigma_each_pt)(
+        #     xyz_,
+        #     feature_map[0],
+        #     self.grid_f_poses_w2c[0],
+        #     self.grid_f_Ks[0],
+        #     self.d_min,
+        #     self.d_max,
+        #     n_freqs=6,
+        #     freq_factor=1.5,
+        #     network=self.mlp_coarse,
+        # )
+        # grad_sigma = torch.stack([get_normal_each_pt(p) for p in xyz[0]], dim=0)
+        # ipdb.set_trace()  # 61245
+        return rgb, invalid, sigma, g
+
+
+def positional_encode(x: torch.Tensor, n_freqs: int, freq_factor: float):
+    from math import pi
+
+    phases = torch.zeros(2 * n_freqs, device=x.device)
+    phases[1::2] = pi * 0.5
+    phases = phases.view(1, -1, 1)
+    freqs = torch.repeat_interleave(
+        freq_factor * 2.0 ** torch.arange(0, n_freqs, device=x.device), repeats=2
+    ).view(1, -1, 1)
+    emb = x.unsqueeze(1).repeat(1, 2 * n_freqs, 1)
+    emb = torch.sin(torch.addcmul(phases, emb, freqs))
+    return torch.cat((x, emb.view(x.shape[0], -1)), dim=-1)
+
+
+def get_sigma_grad(
+    xyz: torch.Tensor,
+    feature: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    K: torch.Tensor,
+    d_min: int,
+    d_max: int,
+    n_freqs: int,
+    freq_factor: int,
+    network: nn.Module,
+):
+    n, n_pts, _ = xyz.shape
+    n_, nv, c, h, w = feature.shape
+    assert n == n_
+    xyz_ = xyz.unsqueeze(1)
+    ones = torch.ones_like(xyz_[..., :1])
+    xyz_ = torch.cat((xyz_, ones), dim=-1)
+    xyz_projected = (
+        K[:, :nv] @ (pose_w2c[:, :nv, :3, :] @ (xyz_.permute(0, 1, 3, 2)))
+    ).permute(0, 1, 3, 2)
+    xy = xyz_projected[..., :2] / xyz_projected[..., 2:].clamp_min(EPS)
+    sampled_features = (
+        F.grid_sample(
+            feature.view(n * nv, c, h, w),
+            xy.view(n * nv, 1, -1, 2),
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
+        )
+        .view(n, nv, c, n_pts)
+        .permute(0, 3, 1, 2)
+    )
+
+    def get_sigma_each_pt(
+        xyz: torch.Tensor,
+        feature_pt: torch.Tensor,
+        pose_w2c: torch.Tensor,
+        K: torch.Tensor,
+    ):
+        assert xyz.shape == (3,)
+        assert len(feature_pt.shape) == 2
+        assert len(pose_w2c.shape) == 3
+        assert len(K.shape) == 3
+        assert pose_w2c.shape[1:] == (4, 4)
+        assert K.shape[1:] == (3, 3)
+        nv, c = feature_pt.shape
+        xyz = xyz.unsqueeze(0)  # (1, 3)
+        xyz = torch.cat((xyz, torch.ones_like(xyz[..., :1])), dim=-1)  # (1, 4)
+        xyz_projected = pose_w2c[:nv, :3, :] @ xyz.unsqueeze(-1)
+        xyz_projected = (K[:nv] @ xyz_projected).squeeze(-1)  # (nv, 3)
+        xy = xyz_projected[:, [0, 1]]  # (nv, 2)
+        z = xyz_projected[:, 2:3]  # (nv, 1)
+        xy = xy / z.clamp_min(1e-3)
+        z = (1 / z.clamp_min(1e-3) - 1 / d_max) / (1 / d_min - 1 / d_max)
+        z = 2 * z - 1
+        xyz_projected = torch.cat((xy, z), dim=-1)  # (nv, 3)
+        xyz_code = positional_encode(xyz_projected, n_freqs, freq_factor)  # (nv, 39)
+        sampled_features = torch.cat((feature_pt, xyz_code), dim=-1)  # (nv, c')
+        mlp_input = sampled_features.mean(dim=0).view(1, -1)  # use_single_featuremap
+        mlp_output = network(mlp_input)
+        sigma = F.softplus(mlp_output[..., 0].squeeze())
+        return sigma
+
+    def get_sigma_grad_each_batch(xyz, feature_pt, pose_w2c, K):
+        return vmap(grad(get_sigma_each_pt), in_dims=(0, 0, None, None))(xyz, feature_pt, pose_w2c, K)
+
+    return vmap(get_sigma_grad_each_batch)(xyz, sampled_features, pose_w2c, K)

@@ -1,3 +1,4 @@
+# import ipdb
 import math
 from copy import copy
 
@@ -18,7 +19,7 @@ from datasets.data_util import make_datasets
 from datasets.kitti_odom.kitti_odometry_dataset import KittiOdometryDataset
 from datasets.kitti_raw.kitti_raw_dataset import KittiRawDataset
 from models.common.model.scheduler import make_scheduler
-from models.common.render import NeRFRenderer
+from models.common.render import NeRFRenderer, _RenderWrapper
 from models.bts.model.image_processor import make_image_processor, RGBProcessor
 from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
 from models.bts.model.models_bts import BTSNet
@@ -87,6 +88,7 @@ class BTSWrapper(nn.Module):
 
     def forward(self, data):
         data = dict(data)
+        # ipdb.set_trace() # 1
         images = torch.stack(data["imgs"], dim=1)                           # n, v, c, h, w
         poses = torch.stack(data["poses"], dim=1)                           # n, v, 4, 4 w2c
         projs = torch.stack(data["projs"], dim=1)                           # n, v, 4, 4 (-1, 1)
@@ -121,6 +123,7 @@ class BTSWrapper(nn.Module):
 
         combine_ids = None
 
+        # ipdb.set_trace() # 2
         if self.training:
             if self.frame_sample_mode == "only":
                 ids_loss = [0]
@@ -155,6 +158,7 @@ class BTSWrapper(nn.Module):
                     ids_loss += [cam * steps + i for i in range(start_from, steps, 2)]
                     ids_render += [cam * steps + i for i in range(1 - start_from, steps, 2)]
                     start_from = 1 - start_from
+                # ids_loss, ids_render in {[0, 3, 4, 7], [1, 2, 5, 6]}
             elif self.frame_sample_mode.startswith("waymo"):
                 num_views = int(self.frame_sample_mode.split("-")[-1])
                 steps = v // num_views
@@ -195,6 +199,7 @@ class BTSWrapper(nn.Module):
         if self.loss_from_single_img:
             ids_loss = ids_loss[:1]
 
+        # ipdb.set_trace() # 3
         ip = self.train_image_processor if self.training else self.val_image_processor
 
         images_ip = ip(images)
@@ -205,10 +210,12 @@ class BTSWrapper(nn.Module):
                 errors = compute_errors_l1ssim(reference_imgs, render_imgs).mean(-2).squeeze(-1).unsqueeze(2)
                 images_ip = torch.cat((images_ip, errors), dim=2)
 
+        # ipdb.set_trace() # 4
         with profiler.record_function("trainer_encode-grid"):
-            self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
+            self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder]) # nonsence
             self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_render, images_alt=images_ip, combine_ids=combine_ids)
 
+        # ipdb.set_trace() # 5
         sampler = self.train_sampler if self.training else self.val_sampler
 
         with profiler.record_function("trainer_sample-rays"):
@@ -241,15 +248,18 @@ class BTSWrapper(nn.Module):
                 data["rgb_gt"] = render_dict["rgb_gt"]
                 data["rays"] = render_dict["rays"]
         else:
+            # ipdb.set_trace() # 6
             with profiler.record_function("trainer_render"):
                 render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_rgb_samps=True)
 
+            # ipdb.set_trace() # 7
             if "fine" not in render_dict:
                 render_dict["fine"] = dict(render_dict["coarse"])
 
             render_dict["rgb_gt"] = all_rgb_gt
             render_dict["rays"] = all_rays
 
+            # ipdb.set_trace() # 8
             with profiler.record_function("trainer_reconstruct"):
                 render_dict = sampler.reconstruct(render_dict)
 
