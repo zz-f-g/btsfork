@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+# from torch.func import vmap
 
 from dsine.models.conv_encoder_decoder.submodules import Encoder, UpSampleBN, UpSampleGN, \
     INPUT_CHANNELS_DICT, upsample_via_bilinear, upsample_via_mask, get_prediction_head
@@ -101,7 +102,7 @@ class DSINE_v02(nn.Module):
         uv_8: torch.Tensor,
         ray_8: torch.Tensor,
     ):
-        ipdb.set_trace()
+        # ipdb.set_trace()
         B, C, H, W = pred_norm.shape
         fu = intrins[:, 0, 0][:,None,None,None] * (W / orig_W) # (B, 1, 1, 1)
         cu = intrins[:, 0, 2][:,None,None,None] * (W / orig_W) # (B, 1, 1, 1)
@@ -180,6 +181,7 @@ class DSINE_v02(nn.Module):
                 ],
                 dim=2,
             )
+            # nghbr_normals_rot = vmap(RayReLU(eps=1e-2), in_dims=(2, None), out_dims=2)(nghbr_normals_rot, ray_8)
 
         # (B, 1, ps*ps, h, w) * (B, 3, ps*ps, h, w)
         pred_norm = torch.sum(nghbr_prob * nghbr_normals_rot, dim=2)    # (B, C, H, W)
@@ -189,7 +191,7 @@ class DSINE_v02(nn.Module):
         up_pred_norm = upsample_via_mask(pred_norm, up_mask, self.downsample_ratio, padding='replicate')
         up_pred_norm = F.normalize(up_pred_norm, dim=1)
 
-        return h_new, pred_norm, up_pred_norm, (nghbr_prob.squeeze(1), nghbr_delta_z, nghbr_axes_angle)
+        return h_new, pred_norm, up_pred_norm, up_mask, (nghbr_prob.squeeze(1), nghbr_delta_z, nghbr_axes_angle)
 
     def forward(self, img, intrins=None, mode='train'):
         # Step 1. encoder
@@ -217,12 +219,13 @@ class DSINE_v02(nn.Module):
         up_pred_norm = self.upsample(h, pred_norm, uv_8)
         pred_list = [up_pred_norm]
         for i in range(self.num_iter_train) if mode == 'train' else range(self.num_iter_test):
-            h, pred_norm, up_pred_norm, misc = self.refine(h, feat_map, 
-                                                     pred_norm.detach(), 
-                                                     intrins, orig_H, orig_W, uv_8, ray_8)
+            h, pred_norm, up_pred_norm, up_mask, misc = self.refine(
+                h, feat_map, pred_norm.detach(), intrins, orig_H, orig_W, uv_8, ray_8
+            )
             pred_list.append(up_pred_norm)
-        ipdb.set_trace()
-        return pred_list
+        # ipdb.set_trace()
+        nghbr_prob, nghbr_delta_z, nghbr_axes_angle = misc
+        return pred_list, pred_norm, up_mask, nghbr_prob, nghbr_delta_z, nghbr_axes_angle
 
     def get_1x_lr_params(self):
         modules = [self.encoder]

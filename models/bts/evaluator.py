@@ -42,9 +42,9 @@ class BTSWrapper(nn.Module):
 
         self.depth_scaling = config.get("depth_scaling", None)
         # dsine_args = dsine_config.get_args(test=True)
-        dsine_args = config.get("dsine_pt")
-        self.normal_model = DSINE(dsine_args).to("cuda")
-        self.normal_model = dsine_utils.load_checkpoint(dsine_args.ckpt_path, self.normal_model)
+        self.dsine_args = config.get("dsine_pt")
+        self.normal_model = DSINE(self.dsine_args).to("cuda")
+        self.normal_model = dsine_utils.load_checkpoint(self.dsine_args.ckpt_path, self.normal_model)
         self.normal_model.eval()
         self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
@@ -104,9 +104,9 @@ class BTSWrapper(nn.Module):
         data["z_far"] = torch.tensor(self.z_far, device=images.device)
 
         rgbleft = data["coarse"][0]["rgb"][0, 0, :, :, 0, :]
-        normleft = data["coarse"][0]["normal"][0, 0, :, :, 0, :]
-        rgbvis = rgbleft.detach().cpu().numpy()
-        normvis = ((normleft / normleft.norm(dim=-1, keepdim=True) + 1) / 2).detach().cpu().numpy()
+        # normleft = data["coarse"][0]["normal"][0, 0, :, :, 0, :]
+        # rgbvis = rgbleft.detach().cpu().numpy()
+        # normvis = ((normleft / normleft.norm(dim=-1, keepdim=True) + 1) / 2).detach().cpu().numpy()
         rgbleft = rgbleft.permute(2, 0, 1).unsqueeze(0)
         _, _, orig_H, orig_W = rgbleft.shape
         lrtb = dsine_utils.get_padding(orig_H, orig_W)
@@ -117,9 +117,43 @@ class BTSWrapper(nn.Module):
         intrins[:, 0, 2] += lrtb[0]
         intrins[:, 1, 2] += lrtb[2]
 
+        pred_norms, down_pred_norm, nghbr_prob, nghbr_delta_z, nghbr_axes_angle = self.normal_model(rgbleft, intrins=intrins)
+        pred_norm = pred_norms[-1][:, :, lrtb[2]:lrtb[2]+orig_H, lrtb[0]:lrtb[0]+orig_W]
+        def visnghbr(nghbr: torch.Tensor, ps:int, pt_vis: torch.Tensor):
+            assert nghbr.shape[1] == ps * ps
+            assert pt_vis.shape[1] == 2
+            def visnghbrpt(nghbr: torch.Tensor, ps: int, pt: torch.Tensor):
+                B, _, H, W = nghbr.shape[:4]
+                radius = (ps - 1) // 2
+                vis = torch.zeros(B, H, W)
+                vis[:, pt[0]-radius:pt[0]+radius+1, pt[1]-radius:pt[1]+radius+1] = nghbr[:, :, *pt].view(B, ps, ps)
+                return vis
+            if len(nghbr.shape) == 4:
+                return torch.stack([visnghbrpt(nghbr, ps, pt) for pt in pt_vis], dim=-1).max(-1).values
+            elif len(nghbr.shape) == 5:
+                return torch.stack(
+                    [
+                        torch.stack([visnghbrpt(nghbr_, ps, pt) for pt in pt_vis], dim=-1).max(-1).values
+                        for nghbr_ in torch.split(nghbr, 1, dim=-1)
+                    ],
+                    dim=-1
+                )
+            else:
+                raise ValueError
+        _, _, H_down, W_down = nghbr_prob.shape
+        n_pts = 10
+        radius = (self.dsine_args.NRN_prop_ps - 1) // 2
+        pts = torch.stack(
+            [
+                torch.randint(radius, H_down - radius, (n_pts,)),
+                torch.randint(radius, W_down - radius, (n_pts,)),
+            ],
+            dim=-1,
+        )
+        vis_nghbr_prob = visnghbr(nghbr_prob, self.dsine_args.NRN_prop_ps, pts)
+        vis_nghbr_delta_z = visnghbr(nghbr_delta_z, self.dsine_args.NRN_prop_ps, pts)
+        vis_nghbr_axes_angle = visnghbr(nghbr_axes_angle, self.dsine_args.NRN_prop_ps, pts)
         ipdb.set_trace()
-        pred_norm = self.normal_model(rgbleft, intrins=intrins)[-1]
-        pred_norm = pred_norm[:, :, lrtb[2]:lrtb[2]+orig_H, lrtb[0]:lrtb[0]+orig_W]
         # pred_norm = pred_norm.detach().cpu().permute(0, 2, 3, 1).numpy()
         # pred_norm = (((pred_norm + 1) * 0.5) * 255)
         # ipdb.set_trace()

@@ -1,4 +1,4 @@
-# import ipdb
+import ipdb
 import math
 from copy import copy
 
@@ -19,7 +19,7 @@ from datasets.data_util import make_datasets
 from datasets.kitti_odom.kitti_odometry_dataset import KittiOdometryDataset
 from datasets.kitti_raw.kitti_raw_dataset import KittiRawDataset
 from models.common.model.scheduler import make_scheduler
-from models.common.render import NeRFRenderer, _RenderWrapper
+from models.common.render import NeRFRenderer
 from models.bts.model.image_processor import make_image_processor, RGBProcessor
 from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
 from models.bts.model.models_bts import BTSNet

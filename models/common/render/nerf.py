@@ -280,12 +280,12 @@ class NeRFRenderer(torch.nn.Module):
             rgbs = torch.cat(rgbs_all, dim=eval_batch_dim)
             invalid = torch.cat(invalid_all, dim=eval_batch_dim)
             sigmas = torch.cat(sigmas_all, dim=eval_batch_dim)
-            sigmagrads = torch.cat(sigmagrads_all, dim=eval_batch_dim)
+            # sigmagrads = torch.cat(sigmagrads_all, dim=eval_batch_dim)
 
             rgbs = rgbs.reshape(B, K, -1)  # (B, K, 4 or 5)
             invalid = invalid.reshape(B, K, -1)
             sigmas = sigmas.reshape(B, K)
-            sigmagrads = sigmagrads.reshape(B, K, -1)
+            # sigmagrads = sigmagrads.reshape(B, K, -1)
 
             if self.training and self.noise_std > 0.0:
                 sigmas = sigmas + torch.randn_like(sigmas) * self.noise_std
@@ -308,7 +308,7 @@ class NeRFRenderer(torch.nn.Module):
             alphas_shifted = None
 
             rgb_final = torch.sum(weights.unsqueeze(-1) * rgbs, -2)  # (B, 3)
-            normal_final = torch.sum(weights.unsqueeze(-1) * sigmagrads, -2)  # (B, 3)
+            # normal_final = torch.sum(weights.unsqueeze(-1) * sigmagrads, -2)  # (B, 3)
             depth_final = torch.sum(weights * z_samp, -1)  # (B)
 
             if self.white_bkgd:
@@ -324,8 +324,8 @@ class NeRFRenderer(torch.nn.Module):
                 invalid,
                 z_samp,
                 rgbs,
-                normal_final,
-                sigmagrads,
+                # normal_final,
+                # sigmagrads,
             )
 
     def forward(
@@ -409,11 +409,12 @@ class NeRFRenderer(torch.nn.Module):
         want_rgb_samps=False,
         want_normal_samps=False,
     ):
-        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps, normal_final, normal_samps = rendered_outputs
+        # weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps, normal_final, normal_samps = rendered_outputs
+        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps = rendered_outputs
         n_smps = weights.shape[-1]
         out_d_rgb = rgb_final.shape[-1]
         out_d_i = invalid.shape[-1]
-        out_d_n = normal_final.shape[-1]
+        # out_d_n = normal_final.shape[-1]
         if superbatch_size > 0:
             rgb_final = rgb_final.reshape(superbatch_size, -1, out_d_rgb)
             depth = depth.reshape(superbatch_size, -1)
@@ -422,13 +423,13 @@ class NeRFRenderer(torch.nn.Module):
             invalid = invalid.reshape(superbatch_size, -1, n_smps, out_d_i)
             z_samps = z_samps.reshape(superbatch_size, -1, n_smps)
             rgb_samps = rgb_samps.reshape(superbatch_size, -1, n_smps, out_d_rgb)
-            normal_final = normal_final.reshape(superbatch_size, -1, out_d_n)
-            normal_samps = normal_samps.reshape(superbatch_size, -1, n_smps, out_d_n)
+            # normal_final = normal_final.reshape(superbatch_size, -1, out_d_n)
+            # normal_samps = normal_samps.reshape(superbatch_size, -1, n_smps, out_d_n)
         ret_dict = DotMap(
             rgb=rgb_final,
             depth=depth,
             invalid=invalid,
-            normal=normal_final,
+            # normal=normal_final,
         )
         if want_weights:
             ret_dict.weights = weights
@@ -438,8 +439,8 @@ class NeRFRenderer(torch.nn.Module):
             ret_dict.z_samps = z_samps
         if want_rgb_samps:
             ret_dict.rgb_samps = rgb_samps
-        if want_normal_samps:
-            ret_dict.normal_samps = normal_samps
+        # if want_normal_samps:
+        #     ret_dict.normal_samps = normal_samps
         return ret_dict
 
     def sched_step(self, steps=1):
