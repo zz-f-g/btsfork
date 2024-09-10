@@ -3,15 +3,31 @@ Main model implementation
 """
 
 import torch
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
+from utils.timer import profiler
 import torch.nn.functional as F
 from torch import nn
 
 from models.common.backbones.backbone_util import make_backbone
 from models.common.model.code import PositionalEncoding
 from models.common.model.mlp_util import make_mlp
+import dsine.utils.utils as dsine_utils
+from dsine.models.dsine.v02 import DSINE_v02 as DSINE
+from dsine.models.conv_encoder_decoder.submodules import upsample_via_mask
+from torchvision import transforms
 
 EPS = 1e-3
+
+
+def get_unfold(image: torch.Tensor, ps: int, dilation: int):
+    B, C, H, W = image.shape
+    assert ps % 2 == 1
+    pad = (ps // 2) * dilation
+    image = F.pad(image, pad=(pad, pad, pad, pad), mode='replicate')
+    result = F.unfold(
+        image, [ps, ps], dilation=dilation, padding=0
+    )
+    return result.view(B, C * ps * ps, H, W)
 
 
 class BTSNet(torch.nn.Module):
@@ -39,7 +55,7 @@ class BTSNet(torch.nn.Module):
 
         self.sample_color = conf.get("sample_color", True)
 
-        d_in = self.encoder.latent_size + self.code_xyz.d_out
+        d_in = self.encoder.latent_size + self.code_xyz.d_out + 1 # TODO: + 1 for feature cat
         d_out = 1 if self.sample_color else 4
 
         self._d_in = d_in
@@ -52,6 +68,12 @@ class BTSNet(torch.nn.Module):
             self.empty_feature = nn.Parameter(torch.randn((self.encoder.latent_size,), requires_grad=True))
 
         self._scale = 0
+        self.dsine_args = conf.get("dsine_pt")
+        self.normal_model = DSINE(self.dsine_args).to("cuda")
+        self.normal_model = dsine_utils.load_checkpoint(self.dsine_args.ckpt_path, self.normal_model)
+        self.normal_model.eval()
+        self.feature_ps: int = self.dsine_args.get("NRN_prop_ps")
+        self.feature_down_ratio: int = self.dsine_args.get("NNET_decoder_down")
 
     def set_scale(self, scale):
         self._scale = scale
@@ -62,7 +84,7 @@ class BTSNet(torch.nn.Module):
     def compute_grid_transforms(self, *args, **kwargs):
         pass
 
-    def encode(self, images, Ks, poses_c2w, ids_encoder=None, ids_render=None, images_alt=None, combine_ids=None):
+    def encode(self, images: torch.Tensor, Ks: torch.Tensor, poses_c2w: torch.Tensor, ids_encoder=None, ids_render=None, images_alt=None, combine_ids=None):
         poses_w2c = torch.inverse(poses_c2w)
 
         if ids_encoder is None:
@@ -135,6 +157,53 @@ class BTSNet(torch.nn.Module):
         self.grid_c_poses_w2c = poses_w2c_render
         self.grid_c_combine = comb_render
 
+        f_x = Ks_encoder[:, 0, 0, 0]
+        f_y = Ks_encoder[:, 0, 1, 1]
+        c_x = Ks_encoder[:, 0, 0, 2]
+        c_y = Ks_encoder[:, 0, 1, 2]
+        # change pixel coordinates system from [-1, 1] to [0, 1] to [0, W/H]
+        f_x = f_x / 2 * w
+        f_y = f_y / 2 * h
+        c_x = (c_x + 1) / 2 * w
+        c_y = (c_y + 1) / 2 * h
+
+        lrtb = dsine_utils.get_padding(h, w)
+        images_encoder_ = F.pad(
+            images_encoder.view(n * nv, c, h, w), lrtb, mode="constant", value=0.0
+        )
+        images_encoder_ = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        )(images_encoder_)
+        c_x += lrtb[0]
+        c_y += lrtb[2]
+
+        Ks_encoder_ = torch.zeros_like(Ks_encoder.squeeze(1))
+        Ks_encoder_[:, 0, 0] = f_x
+        Ks_encoder_[:, 1, 1] = f_y
+        Ks_encoder_[:, 0, 2] = c_x
+        Ks_encoder_[:, 1, 2] = c_y
+
+        with torch.no_grad():
+            (
+                pred_norms,
+                down_pred_norm,
+                up_mask,
+                nghbr_prob,
+                nghbr_delta_z,
+                nghbr_axes_angle,
+            ) = self.normal_model(images_encoder_, intrins=Ks_encoder_)
+        self.pred_norm: torch.Tensor = pred_norms[-1][
+            :, :, lrtb[2] : lrtb[2] + h, lrtb[0] : lrtb[0] + w
+        ].view(n, nv, 3, h, w)
+        self.grid_f_nghbr_prob: torch.Tensor = nghbr_prob.view(
+            n,
+            nv,
+            self.feature_ps**2,
+            h // self.feature_down_ratio,
+            w // self.feature_down_ratio,
+        )
+        self.up_mask = up_mask
+
     def sample_features(self, xyz, use_single_featuremap=True):
         n, n_pts, _ = xyz.shape
         n, nv, c, h, w = self.grid_f_features[self._scale].shape
@@ -172,11 +241,55 @@ class BTSNet(torch.nn.Module):
         xyz_code = self.code_xyz(xyz_projected.view(n * nv * n_pts, -1)).view(n, nv, n_pts, -1)
 
         feature_map = self.grid_f_features[self._scale][:, :nv]
+
+        h_down, w_down = h // self.feature_down_ratio, w // self.feature_down_ratio
+        feature_map_unfolded = get_unfold(
+            F.interpolate(
+                feature_map.view(n * nv, c, h, w),
+                scale_factor=1 / self.feature_down_ratio,
+                mode="bilinear",
+                align_corners=False,
+            ),
+            self.feature_ps,
+            1,
+        ).view(n, nv, c, self.feature_ps**2, h_down, w_down)
+        # 试验一：使用 DSINE nghbr_prob 对 feature_map 加权平均
+        feature_map_nghbr = (
+            feature_map_unfolded
+            * F.normalize(self.grid_f_nghbr_prob, dim=2).unsqueeze(2)
+        ).sum(dim=3)
+        feature_map_regroup = feature_map_nghbr[:, :, :self.feature_down_ratio**2].view(n * nv, self.feature_down_ratio, self.feature_down_ratio, h_down, w_down).permute(0, 3, 1, 4, 2).reshape(n, nv, 1, h, w)
+        feature_map_cat = torch.cat([feature_map, feature_map_regroup], dim=2)
+
+        # 试验四（对比试验）：只降采样 feature_map
+        feature_map_down = F.interpolate(
+            feature_map.view(n * nv, c, h, w),
+            scale_factor=1 / self.feature_down_ratio,
+            mode="bilinear",
+            align_corners=False,
+        ).view(n, nv, c, h_down, w_down)
+
+        # 试验三：在试验一基础上增加掩码网络恢复分辨率
+        feature_map_nghbr = upsample_via_mask(
+            feature_map_nghbr.view(n * nv, c, h_down, w_down),
+            self.up_mask,
+            self.feature_down_ratio,
+            padding="replicate",
+        ).view(n, nv, c, h, w)
+
+        # 试验二：法向量局域相似度对 feature_map 加权平均
+        # feature_map_unfolded = get_unfold(
+        #     feature_map.view(n * nv, c, h, w), self.feature_ps, 1
+        # ).view(n, nv, c, self.feature_ps**2, h, w)
+        # norm_nghbr = get_unfold(self.pred_norm.view(n * nv, 3, h, w), self.feature_ps, 1).view(n, nv, 3, self.feature_ps**2, h, w)
+        # norm_weight = (norm_nghbr * self.pred_norm.unsqueeze(3)).sum(2, keepdim=True)
+        # feature_map_nghbr = (norm_weight * feature_map_unfolded).sum(3)
+
         # These samples are from different scales
         if self.learn_empty:
             empty_feature_expanded = self.empty_feature.view(1, 1, 1, c).expand(n, nv, n_pts, c)
 
-        sampled_features = F.grid_sample(feature_map.view(n * nv, c, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c, n_pts).permute(0, 1, 3, 2)
+        sampled_features = F.grid_sample(feature_map_cat.view(n * nv, c + 1, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c + 1, n_pts).permute(0, 1, 3, 2) # TODO: + 1 for feature cat
 
         if self.learn_empty:
             sampled_features[invalid.expand(-1, -1, -1, c)] = empty_feature_expanded[invalid.expand(-1, -1, -1, c)]

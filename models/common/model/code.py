@@ -1,6 +1,7 @@
 import torch
 import numpy as np
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
+from utils.timer import profiler
 
 
 class PositionalEncoding(torch.nn.Module):

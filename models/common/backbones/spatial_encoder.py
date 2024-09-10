@@ -1,10 +1,11 @@
 import torch
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
 import torch.nn.functional as F
 import torchvision
 from torch import nn
 
 from models.common.util import util
+from utils.timer import profiler
 
 
 class SpatialEncoder(nn.Module):

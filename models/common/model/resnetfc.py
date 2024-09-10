@@ -2,8 +2,9 @@ from torch import nn
 import torch
 
 #  import torch_scatter
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
 from models.common import util
+from utils.timer import profiler
 
 
 # Resnet Blocks

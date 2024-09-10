@@ -298,6 +298,8 @@ def create_trainer(model, optimizer, criterion, lr_scheduler, train_sampler, con
         scaler.step(optimizer)
         scaler.update()
         timing["t_backward"] = time.time() - _start_time
+        if "timing" in data:
+            timing.update(data["timing"])
 
         return {
             "output": data,

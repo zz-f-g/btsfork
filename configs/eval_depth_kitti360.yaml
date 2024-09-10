@@ -1,0 +1,64 @@
+defaults:
+  - default
+  - data: kitti_360
+  - model_conf/backbone: default
+  - _self_
+
+name: "eval_depth"
+eval_type: "eval_depth"
+checkpoint: "checkpoints/KITTI-360.pt"
+
+log_every: 100
+batch_size: 1
+
+data:
+  image_size: [ 192, 640 ]
+  data_fc: 1
+  return_gt_depth: true
+  return_pseudo_depth: true
+  is_preprocessed: true
+
+
+model_conf:
+  eval_rendered_depth: true
+
+  arch: "BTSNet"
+  use_code: true
+
+  code:
+    num_freqs: 6
+    freq_factor: 1.5
+    include_input: true
+
+  backbone:
+    use_depth_branch: true
+
+  mlp_coarse:
+    type: "resnet"
+    n_blocks: 0
+    d_hidden: 64
+
+  mlp_fine:
+    type: "empty"
+    n_blocks: 1
+    d_hidden: 128
+
+  z_near: 3
+  z_far: 80
+  ray_batch_size: 256
+  code_mode: z
+  inv_z: true
+
+  n_frames_encoder: 1
+  n_frames_render: 1
+
+
+renderer:
+  n_coarse: 64
+  n_fine: 0
+  n_fine_depth: 0
+  depth_std: 1.0
+  sched: [ ]
+  white_bkgd: false
+  lindisp: true
+  hard_alpha_cap: true

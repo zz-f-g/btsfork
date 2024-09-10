@@ -18,6 +18,9 @@ from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, Rando
 from utils.base_evaluator import base_evaluation
 from utils.metrics import MeanMetric
 from utils.projection_operations import distance_to_z
+import dsine.utils.utils as dsine_utils
+from dsine.models.dsine.v02 import DSINE_v02 as DSINE
+from torchvision import transforms
 
 IDX = 0
 
@@ -36,6 +39,11 @@ class BTSWrapper(nn.Module):
         self.lpips_vgg = lpips.LPIPS(net="vgg")
 
         self.depth_scaling = config.get("depth_scaling", None)
+        self.dsine_args = config.get("dsine_pt")
+        self.normal_model = DSINE(self.dsine_args).to("cuda")
+        self.normal_model = dsine_utils.load_checkpoint(self.dsine_args.ckpt_path, self.normal_model)
+        self.normal_model.eval()
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
     @staticmethod
     def get_loss_metric_names():
@@ -65,7 +73,7 @@ class BTSWrapper(nn.Module):
         data["coarse"] = []
 
         self.renderer.net.set_scale(0)
-        render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True)
+        render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_z_samps=True)
 
         if "fine" not in render_dict:
             render_dict["fine"] = dict(render_dict["coarse"])

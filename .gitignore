@@ -191,3 +191,7 @@ fabric.properties
 *.jpeg
 *.jpg
 *.ply
+*.pt
+*.zip
+data
+outputs
