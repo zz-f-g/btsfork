@@ -281,6 +281,8 @@ class ReconstructionLoss:
 
             loss = loss + loss_ray_entropy * self.lambda_entropy
 
+            loss = loss + data["nfloss"] * 1e-3
+
         loss_dict["loss_rgb_coarse"] = loss_coarse_all
         loss_dict["loss_rgb_fine"] = loss_fine_all
         loss_dict["loss_ray_entropy"] = loss_ray_entropy.item()
@@ -289,6 +291,7 @@ class ReconstructionLoss:
         loss_dict["loss_eas"] = loss_eas.item()
         loss_dict["loss_depth_smoothness"] = loss_depth_smoothness.item()
         loss_dict["loss_invalid_ratio"] = invalid_coarse.float().mean().item()
+        loss_dict["loss_normal_feature"] = data["nfloss"].item()
         loss_dict["loss"] = loss.item()
 
         return loss, loss_dict

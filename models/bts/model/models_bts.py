@@ -25,7 +25,7 @@ def get_unfold(image: torch.Tensor, ps: int, dilation: int):
     pad = (ps // 2) * dilation
     image = F.pad(image, pad=(pad, pad, pad, pad), mode='replicate')
     result = F.unfold(
-        image, [ps, ps], dilation=dilation, padding=0
+        image, (ps, ps), dilation=dilation, padding=0
     )
     return result.view(B, C * ps * ps, H, W)
 
@@ -55,7 +55,7 @@ class BTSNet(torch.nn.Module):
 
         self.sample_color = conf.get("sample_color", True)
 
-        d_in = self.encoder.latent_size + self.code_xyz.d_out + 1 # TODO: + 1 for feature cat
+        d_in = self.encoder.latent_size + self.code_xyz.d_out # TODO: + 1 for feature cat
         d_out = 1 if self.sample_color else 4
 
         self._d_in = d_in
@@ -157,52 +157,54 @@ class BTSNet(torch.nn.Module):
         self.grid_c_poses_w2c = poses_w2c_render
         self.grid_c_combine = comb_render
 
-        f_x = Ks_encoder[:, 0, 0, 0]
-        f_y = Ks_encoder[:, 0, 1, 1]
-        c_x = Ks_encoder[:, 0, 0, 2]
-        c_y = Ks_encoder[:, 0, 1, 2]
-        # change pixel coordinates system from [-1, 1] to [0, 1] to [0, W/H]
-        f_x = f_x / 2 * w
-        f_y = f_y / 2 * h
-        c_x = (c_x + 1) / 2 * w
-        c_y = (c_y + 1) / 2 * h
+        with profiler.record_function("normal_inference"):
+            f_x = Ks_encoder[:, 0, 0, 0]
+            f_y = Ks_encoder[:, 0, 1, 1]
+            c_x = Ks_encoder[:, 0, 0, 2]
+            c_y = Ks_encoder[:, 0, 1, 2]
+            # change pixel coordinates system from [-1, 1] to [0, 1] to [0, W/H]
+            f_x = f_x / 2 * w
+            f_y = f_y / 2 * h
+            c_x = (c_x + 1) / 2 * w
+            c_y = (c_y + 1) / 2 * h
 
-        lrtb = dsine_utils.get_padding(h, w)
-        images_encoder_ = F.pad(
-            images_encoder.view(n * nv, c, h, w), lrtb, mode="constant", value=0.0
-        )
-        images_encoder_ = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-        )(images_encoder_)
-        c_x += lrtb[0]
-        c_y += lrtb[2]
+            lrtb = dsine_utils.get_padding(h, w)
+            images_encoder_ = F.pad(
+                images_encoder.view(n * nv, c, h, w), lrtb, mode="constant", value=0.0
+            )
+            images_encoder_ = transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+            )(images_encoder_)
+            c_x += lrtb[0]
+            c_y += lrtb[2]
 
-        Ks_encoder_ = torch.zeros_like(Ks_encoder.squeeze(1))
-        Ks_encoder_[:, 0, 0] = f_x
-        Ks_encoder_[:, 1, 1] = f_y
-        Ks_encoder_[:, 0, 2] = c_x
-        Ks_encoder_[:, 1, 2] = c_y
+            Ks_encoder_ = torch.zeros_like(Ks_encoder.squeeze(1))
+            Ks_encoder_[:, 0, 0] = f_x
+            Ks_encoder_[:, 1, 1] = f_y
+            Ks_encoder_[:, 0, 2] = c_x
+            Ks_encoder_[:, 1, 2] = c_y
 
-        with torch.no_grad():
-            (
-                pred_norms,
-                down_pred_norm,
-                up_mask,
-                nghbr_prob,
-                nghbr_delta_z,
-                nghbr_axes_angle,
-            ) = self.normal_model(images_encoder_, intrins=Ks_encoder_)
-        self.pred_norm: torch.Tensor = pred_norms[-1][
-            :, :, lrtb[2] : lrtb[2] + h, lrtb[0] : lrtb[0] + w
-        ].view(n, nv, 3, h, w)
-        self.grid_f_nghbr_prob: torch.Tensor = nghbr_prob.view(
-            n,
-            nv,
-            self.feature_ps**2,
-            h // self.feature_down_ratio,
-            w // self.feature_down_ratio,
-        )
-        self.up_mask = up_mask
+            with torch.no_grad():
+                (
+                    pred_norms,
+                    down_pred_norm,
+                    up_mask,
+                    nghbr_prob,
+                    nghbr_delta_z,
+                    nghbr_axes_angle,
+                ) = self.normal_model(images_encoder_, intrins=Ks_encoder_)
+            self.pred_norm: torch.Tensor = pred_norms[-1][
+                :, :, lrtb[2] : lrtb[2] + h, lrtb[0] : lrtb[0] + w
+            ].view(n, nv, 3, h, w)
+            self.grid_f_nghbr_prob: torch.Tensor = nghbr_prob.view(
+                n,
+                nv,
+                self.feature_ps**2,
+                h // self.feature_down_ratio,
+                w // self.feature_down_ratio,
+            )
+            self.up_mask = up_mask
+        return image_latents_ms[self._scale], self.pred_norm
 
     def sample_features(self, xyz, use_single_featuremap=True):
         n, n_pts, _ = xyz.shape
@@ -242,25 +244,26 @@ class BTSNet(torch.nn.Module):
 
         feature_map = self.grid_f_features[self._scale][:, :nv]
 
-        h_down, w_down = h // self.feature_down_ratio, w // self.feature_down_ratio
-        feature_map_unfolded = get_unfold(
-            F.interpolate(
-                feature_map.view(n * nv, c, h, w),
-                scale_factor=1 / self.feature_down_ratio,
-                mode="bilinear",
-                align_corners=False,
-            ),
-            self.feature_ps,
-            1,
-        ).view(n, nv, c, self.feature_ps**2, h_down, w_down)
-        # 试验一：使用 DSINE nghbr_prob 对 feature_map 加权平均
-        feature_map_nghbr = (
-            feature_map_unfolded
-            * F.normalize(self.grid_f_nghbr_prob, dim=2).unsqueeze(2)
-        ).sum(dim=3)
-        feature_map_regroup = feature_map_nghbr[:, :, :self.feature_down_ratio**2].view(n * nv, self.feature_down_ratio, self.feature_down_ratio, h_down, w_down).permute(0, 3, 1, 4, 2).reshape(n, nv, 1, h, w)
-        feature_map_cat = torch.cat([feature_map, feature_map_regroup], dim=2)
+        # h_down, w_down = h // self.feature_down_ratio, w // self.feature_down_ratio
+        # feature_map_unfolded = get_unfold(
+        #     F.interpolate(
+        #         feature_map.view(n * nv, c, h, w),
+        #         scale_factor=1 / self.feature_down_ratio,
+        #         mode="bilinear",
+        #         align_corners=False,
+        #     ),
+        #     self.feature_ps,
+        #     1,
+        # ).view(n, nv, c, self.feature_ps**2, h_down, w_down)
+        # # 试验一：使用 DSINE nghbr_prob 对 feature_map 加权平均
+        # feature_map_nghbr = (
+        #     feature_map_unfolded
+        #     * F.normalize(self.grid_f_nghbr_prob, dim=2).unsqueeze(2)
+        # ).sum(dim=3)
+        # feature_map_regroup = feature_map_nghbr[:, :, :self.feature_down_ratio**2].view(n * nv, self.feature_down_ratio, self.feature_down_ratio, h_down, w_down).permute(0, 3, 1, 4, 2).reshape(n, nv, 1, h, w)
+        # feature_map_cat = torch.cat([feature_map, feature_map_regroup], dim=2)
 
+        '''
         # 试验四（对比试验）：只降采样 feature_map
         feature_map_down = F.interpolate(
             feature_map.view(n * nv, c, h, w),
@@ -284,12 +287,13 @@ class BTSNet(torch.nn.Module):
         # norm_nghbr = get_unfold(self.pred_norm.view(n * nv, 3, h, w), self.feature_ps, 1).view(n, nv, 3, self.feature_ps**2, h, w)
         # norm_weight = (norm_nghbr * self.pred_norm.unsqueeze(3)).sum(2, keepdim=True)
         # feature_map_nghbr = (norm_weight * feature_map_unfolded).sum(3)
+        '''
 
         # These samples are from different scales
         if self.learn_empty:
             empty_feature_expanded = self.empty_feature.view(1, 1, 1, c).expand(n, nv, n_pts, c)
 
-        sampled_features = F.grid_sample(feature_map_cat.view(n * nv, c + 1, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c + 1, n_pts).permute(0, 1, 3, 2) # TODO: + 1 for feature cat
+        sampled_features = F.grid_sample(feature_map.view(n * nv, c, h, w), xy.view(n * nv, 1, -1, 2), mode="bilinear", padding_mode="border", align_corners=False).view(n, nv, c, n_pts).permute(0, 1, 3, 2) # TODO: + 1 for feature cat
 
         if self.learn_empty:
             sampled_features[invalid.expand(-1, -1, -1, c)] = empty_feature_expanded[invalid.expand(-1, -1, -1, c)]

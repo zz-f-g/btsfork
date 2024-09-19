@@ -324,7 +324,7 @@ def create_trainer(model, optimizer, criterion, lr_scheduler, train_sampler, con
         save_handler=get_save_handler(config),
         lr_scheduler=lr_scheduler,
         output_names=None,
-        with_pbars=False,
+        with_pbars=True,
         clear_cuda_cache=False,
         log_every_iters=config.get("log_every_iters", 100)
     )

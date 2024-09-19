@@ -1,5 +1,6 @@
 import math
 from copy import copy
+from random import randint
 
 import ignite.distributed as idist
 import torch
@@ -28,6 +29,40 @@ from utils.base_trainer import base_training
 from utils.metrics import MeanMetric
 from utils.plotting import color_tensor
 from utils.projection_operations import distance_to_z
+
+
+def nfloss(feature: torch.Tensor, normal: torch.Tensor, kernel_size: int):
+    def get_random_slice(h: int, w: int, kernel: int):
+        assert kernel % 2 == 1
+        radius = kernel // 2
+        center_j = randint(radius, w - radius - 1)
+        center_i = randint(radius, h - radius - 1)
+        return center_i, center_j, radius
+
+    def slice_bbox(feature: torch.Tensor, center_i: int, center_j: int, radius: int):
+        return feature[
+            ...,
+            center_i - radius : center_i + radius + 1,
+            center_j - radius : center_j + radius + 1,
+        ]
+
+    def nghbr_similarity(feature_bbox: torch.Tensor):
+        _, _, h, w = feature_bbox.shape
+        feature_bbox = F.normalize(feature_bbox, dim=1)
+        center = divmod(h * w // 2, w)
+        feature_sim = (
+            feature_bbox * feature_bbox[..., center[0], center[1]][..., None, None]
+        ).sum(dim=1)
+        return feature_sim
+
+    n, _, h, w = feature.shape
+    assert (n, 3, h, w) == normal.shape
+    center_i, center_j, radius = get_random_slice(h, w, kernel_size)
+    feature_bbox = slice_bbox(feature, center_i, center_j, radius)
+    normal_bbox = slice_bbox(normal, center_i, center_j, radius)
+    feature_sim = nghbr_similarity(feature_bbox)
+    normal_sim = nghbr_similarity(normal_bbox)
+    return torch.max((feature_sim - normal_sim).sum(), torch.zeros_like(feature_sim)).sum()
 
 
 class BTSWrapper(nn.Module):
@@ -208,7 +243,16 @@ class BTSWrapper(nn.Module):
 
         with profiler.record_function("trainer_encode-grid"):
             self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
-            self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_render, images_alt=images_ip, combine_ids=combine_ids)
+            feature, norm = self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_render, images_alt=images_ip, combine_ids=combine_ids)
+
+        with profiler.record_function("trainer_nfloss"):
+            n, nv, c, h, w = feature.shape
+            assert (n, nv, 3, h, w) == norm.shape
+            data["nfloss"] = nfloss(
+                feature.view(n * nv, c, h, w),
+                norm.view(n * nv, 3, h, w),
+                kernel_size=7,
+            )
 
         sampler = self.train_sampler if self.training else self.val_sampler
 

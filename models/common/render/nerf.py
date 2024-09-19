@@ -4,7 +4,9 @@ References:
 https://github.com/bmild/nerf
 https://github.com/kwea123/nerf_pl
 """
+
 import torch
+
 # import torch.autograd.profiler as profiler
 from dotmap import DotMap
 from utils.timer import profiler
@@ -17,7 +19,15 @@ class _RenderWrapper(torch.nn.Module):
         self.renderer = renderer
         self.simple_output = simple_output
 
-    def forward(self, rays, want_weights=False, want_alphas=False, want_z_samps=False, want_rgb_samps=False, sample_from_dist=None):
+    def forward(
+        self,
+        rays,
+        want_weights=False,
+        want_alphas=False,
+        want_z_samps=False,
+        want_rgb_samps=False,
+        sample_from_dist=None,
+    ):
         if rays.shape[0] == 0:
             return (
                 torch.zeros(0, 3, device=rays.device),
@@ -31,7 +41,7 @@ class _RenderWrapper(torch.nn.Module):
             want_alphas=want_alphas and not self.simple_output,
             want_z_samps=want_z_samps and not self.simple_output,
             want_rgb_samps=want_rgb_samps and not self.simple_output,
-            sample_from_dist=sample_from_dist
+            sample_from_dist=sample_from_dist,
         )
         if self.simple_output:
             if self.renderer.using_fine:
@@ -74,7 +84,7 @@ class NeRFRenderer(torch.nn.Module):
         white_bkgd=False,
         lindisp=False,
         sched=None,  # ray sampling schedule for coarse and fine rays
-        hard_alpha_cap=False
+        hard_alpha_cap=False,
     ):
         super().__init__()
         self.n_coarse = n_coarse
@@ -137,20 +147,22 @@ class NeRFRenderer(torch.nn.Module):
 
         u = torch.rand(B, num_samples, dtype=torch.float32, device=device)  # (B, Kf)
         interval_ids = torch.searchsorted(cdf, u, right=True) - 1  # (B, Kf)
-        interval_ids = torch.clamp(interval_ids, 0, num_samples-1)
+        interval_ids = torch.clamp(interval_ids, 0, num_samples - 1)
         interval_interp = torch.rand_like(interval_ids, dtype=torch.float32)
 
         # z_samps describe the centers of the respective histogram bins. Therefore, we have to extend them to the left and right
         if self.lindisp:
             z_samp = 1 / z_samp
 
-        centers = .5 * (z_samp[:, 1:] + z_samp[:, :-1])
+        centers = 0.5 * (z_samp[:, 1:] + z_samp[:, :-1])
         interval_borders = torch.cat((z_samp[:, :1], centers, z_samp[:, -1:]), dim=-1)
 
         left_border = torch.gather(interval_borders, dim=-1, index=interval_ids)
-        right_border = torch.gather(interval_borders, dim=-1, index=interval_ids+1)
+        right_border = torch.gather(interval_borders, dim=-1, index=interval_ids + 1)
 
-        z_samp_new = left_border * (1 - interval_interp) + right_border * interval_interp
+        z_samp_new = (
+            left_border * (1 - interval_interp) + right_border * interval_interp
+        )
 
         if self.lindisp:
             z_samp_new = 1 / z_samp_new
@@ -246,27 +258,30 @@ class NeRFRenderer(torch.nn.Module):
                 eval_batch_dim = 0
 
             split_points = torch.split(points, eval_batch_size, dim=eval_batch_dim)
-            if use_viewdirs:
-                dim1 = K
-                viewdirs = rays[:, None, 3:6].expand(-1, dim1, -1)  # (B, K, 3)
-                if sb > 0:
-                    viewdirs = viewdirs.reshape(sb, -1, 3)  # (SB, B'*K, 3)
+            with profiler.record_function("renderer_composite_mlp"):
+                if use_viewdirs:
+                    dim1 = K
+                    viewdirs = rays[:, None, 3:6].expand(-1, dim1, -1)  # (B, K, 3)
+                    if sb > 0:
+                        viewdirs = viewdirs.reshape(sb, -1, 3)  # (SB, B'*K, 3)
+                    else:
+                        viewdirs = viewdirs.reshape(-1, 3)  # (B*K, 3)
+                    split_viewdirs = torch.split(
+                        viewdirs, eval_batch_size, dim=eval_batch_dim
+                    )
+                    for pnts, dirs in zip(split_points, split_viewdirs):
+                        rgbs, invalid, sigmas = model(
+                            pnts, coarse=coarse, viewdirs=dirs
+                        )
+                        rgbs_all.append(rgbs)
+                        invalid_all.append(invalid)
+                        sigmas_all.append(sigmas)
                 else:
-                    viewdirs = viewdirs.reshape(-1, 3)  # (B*K, 3)
-                split_viewdirs = torch.split(
-                    viewdirs, eval_batch_size, dim=eval_batch_dim
-                )
-                for pnts, dirs in zip(split_points, split_viewdirs):
-                    rgbs, invalid, sigmas = model(pnts, coarse=coarse, viewdirs=dirs)
-                    rgbs_all.append(rgbs)
-                    invalid_all.append(invalid)
-                    sigmas_all.append(sigmas)
-            else:
-                for pnts in split_points:
-                    rgbs, invalid, sigmas = model(pnts, coarse=coarse)
-                    rgbs_all.append(rgbs)
-                    invalid_all.append(invalid)
-                    sigmas_all.append(sigmas)
+                    for pnts in split_points:
+                        rgbs, invalid, sigmas = model(pnts, coarse=coarse)
+                        rgbs_all.append(rgbs)
+                        invalid_all.append(invalid)
+                        sigmas_all.append(sigmas)
             points = None
             viewdirs = None
             # (B*K, 4) OR (SB, B'*K, 4)
@@ -281,7 +296,9 @@ class NeRFRenderer(torch.nn.Module):
             if self.training and self.noise_std > 0.0:
                 sigmas = sigmas + torch.randn_like(sigmas) * self.noise_std
 
-            alphas = 1 - torch.exp(-deltas.abs() * torch.relu(sigmas))  # (B, K) (delta should be positive anyways)
+            alphas = 1 - torch.exp(
+                -deltas.abs() * torch.relu(sigmas)
+            )  # (B, K) (delta should be positive anyways)
 
             if self.hard_alpha_cap:
                 alphas[:, -1] = 1
@@ -303,18 +320,17 @@ class NeRFRenderer(torch.nn.Module):
                 # White background
                 pix_alpha = weights.sum(dim=1)  # (B), pixel alpha
                 rgb_final = rgb_final + 1 - pix_alpha.unsqueeze(-1)  # (B, 3)
-            return (
-                weights,
-                rgb_final,
-                depth_final,
-                alphas,
-                invalid,
-                z_samp,
-                rgbs
-            )
+            return (weights, rgb_final, depth_final, alphas, invalid, z_samp, rgbs)
 
     def forward(
-        self, model, rays, want_weights=False, want_alphas=False, want_z_samps=False, want_rgb_samps=False, sample_from_dist=None
+        self,
+        model,
+        rays,
+        want_weights=False,
+        want_alphas=False,
+        want_z_samps=False,
+        want_rgb_samps=False,
+        sample_from_dist=None,
     ):
         """
         :model nerf model, should return (SB, B, (r, g, b, sigma))
@@ -344,13 +360,23 @@ class NeRFRenderer(torch.nn.Module):
                 prop_z_samp = prop_z_samp.reshape(-1, n_samples)
                 z_coarse = self.sample_coarse_from_dist(rays, prop_weights, prop_z_samp)
                 z_coarse, _ = torch.sort(z_coarse, dim=-1)
+
             coarse_composite = self.composite(
-                model, rays, z_coarse, coarse=True, sb=superbatch_size,
+                model,
+                rays,
+                z_coarse,
+                coarse=True,
+                sb=superbatch_size,
             )
 
             outputs = DotMap(
                 coarse=self._format_outputs(
-                    coarse_composite, superbatch_size, want_weights=want_weights, want_alphas=want_alphas, want_z_samps=want_z_samps, want_rgb_samps=want_rgb_samps
+                    coarse_composite,
+                    superbatch_size,
+                    want_weights=want_weights,
+                    want_alphas=want_alphas,
+                    want_z_samps=want_z_samps,
+                    want_rgb_samps=want_rgb_samps,
                 ),
             )
 
@@ -367,18 +393,35 @@ class NeRFRenderer(torch.nn.Module):
                 z_combine = torch.cat(all_samps, dim=-1)  # (B, Kc + Kf)
                 z_combine_sorted, argsort = torch.sort(z_combine, dim=-1)
                 fine_composite = self.composite(
-                    model, rays, z_combine_sorted, coarse=False, sb=superbatch_size,
+                    model,
+                    rays,
+                    z_combine_sorted,
+                    coarse=False,
+                    sb=superbatch_size,
                 )
                 outputs.fine = self._format_outputs(
-                    fine_composite, superbatch_size, want_weights=want_weights, want_alphas=want_alphas, want_z_samps=want_z_samps, want_rgb_samps=want_rgb_samps
+                    fine_composite,
+                    superbatch_size,
+                    want_weights=want_weights,
+                    want_alphas=want_alphas,
+                    want_z_samps=want_z_samps,
+                    want_rgb_samps=want_rgb_samps,
                 )
 
             return outputs
 
     def _format_outputs(
-        self, rendered_outputs, superbatch_size, want_weights=False, want_alphas=False, want_z_samps=False, want_rgb_samps=False
+        self,
+        rendered_outputs,
+        superbatch_size,
+        want_weights=False,
+        want_alphas=False,
+        want_z_samps=False,
+        want_rgb_samps=False,
     ):
-        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps = rendered_outputs
+        weights, rgb_final, depth, alphas, invalid, z_samps, rgb_samps = (
+            rendered_outputs
+        )
         n_smps = weights.shape[-1]
         out_d_rgb = rgb_final.shape[-1]
         out_d_i = invalid.shape[-1]
@@ -435,7 +478,7 @@ class NeRFRenderer(torch.nn.Module):
             lindisp=conf.get("lindisp", True),
             eval_batch_size=conf.get("eval_batch_size", eval_batch_size),
             sched=conf.get("sched", None),
-            hard_alpha_cap=conf.get("hard_alpha_cap", False)
+            hard_alpha_cap=conf.get("hard_alpha_cap", False),
         )
 
     def bind_parallel(self, net, gpus=None, simple_output=False):
@@ -447,7 +490,7 @@ class NeRFRenderer(torch.nn.Module):
         :param net A PixelNeRF network
         :param gpus list of GPU ids to parallize to. If length is 1,
         does not parallelize
-        :param simple_output only returns rendered (rgb, depth) instead of the 
+        :param simple_output only returns rendered (rgb, depth) instead of the
         full render output map. Saves data tranfer cost.
         :return torch module
         """
