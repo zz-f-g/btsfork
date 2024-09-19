@@ -5,7 +5,8 @@ https://github.com/bmild/nerf
 https://github.com/kwea123/nerf_pl
 """
 import torch
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
+from utils.timer import profiler
 from dotmap import DotMap
 
 

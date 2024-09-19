@@ -2,7 +2,8 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch import profiler
+# from torch import profiler
+from utils.timer import profiler
 
 from models.common.model.layers import ssim
 

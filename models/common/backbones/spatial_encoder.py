@@ -1,5 +1,6 @@
 import torch
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
+from utils.timer import profiler
 import torch.nn.functional as F
 import torchvision
 from torch import nn
