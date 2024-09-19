@@ -231,11 +231,11 @@ class KittiRawDataset(Dataset):
 
         for id in ids:
             if load_left:
-                img = cv2.cvtColor(cv2.imread(os.path.join(self.data_path, day, seq, "image_02", "data", f"{id:010d}.jpg")), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
+                img = cv2.cvtColor(cv2.imread(os.path.join(self.data_path, day, seq, "image_02", "data", f"{id:010d}.png")), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
                 imgs_left += [img]
 
             if load_right:
-                img = cv2.cvtColor(cv2.imread(os.path.join(self.data_path, day, seq, "image_03", "data", f"{id:010d}.jpg")), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
+                img = cv2.cvtColor(cv2.imread(os.path.join(self.data_path, day, seq, "image_03", "data", f"{id:010d}.png")), cv2.COLOR_BGR2RGB).astype(np.float32) / 255
                 imgs_right += [img]
 
         return imgs_left, imgs_right
@@ -279,7 +279,7 @@ class KittiRawDataset(Dataset):
 
         # project to image
         depth = np.zeros(size)
-        depth[velo_pts_im[:, 1].astype(np.int), velo_pts_im[:, 0].astype(np.int)] = velo_pts_im[:, 2]
+        depth[velo_pts_im[:, 1].astype(np.int32), velo_pts_im[:, 0].astype(np.int32)] = velo_pts_im[:, 2]
 
         # find the duplicate points and choose the closest depth
         inds = velo_pts_im[:, 1] * (size[1] - 1) + velo_pts_im[:, 0] - 1

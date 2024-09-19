@@ -8,7 +8,8 @@ from ignite.engine import Engine
 from torch import nn
 from torch import optim
 from torch.nn import functional as F
-from torch import profiler
+# from torch import profiler
+from utils.timer import profiler, Recorder
 from torchvision.utils import make_grid
 import skimage.metrics
 
@@ -272,6 +273,8 @@ class BTSWrapper(nn.Module):
 
         if self.training:
             self._counter += 1
+
+        data["timing"] = Recorder.elapsed_time
 
         return data
 

@@ -3,7 +3,8 @@ Main model implementation
 """
 
 import torch
-import torch.autograd.profiler as profiler
+# import torch.autograd.profiler as profiler
+from utils.timer import profiler
 import torch.nn.functional as F
 from torch import nn
 
@@ -280,7 +281,8 @@ class BTSNet(torch.nn.Module):
                 nv = len(self.grid_c_combine)
 
             # Sampled features all has shape: scales [n, n_pts, c + xyz_code]
-            sampled_features, invalid_features = self.sample_features(xyz, use_single_featuremap=not only_density)                  # invalid features (n, n_pts, 1)
+            with profiler.record_function("sample_features"):
+                sampled_features, invalid_features = self.sample_features(xyz, use_single_featuremap=not only_density)                  # invalid features (n, n_pts, 1)
             sampled_features = sampled_features.reshape(n * n_pts, -1)
 
             mlp_input = sampled_features.view(n, n_pts, -1)
@@ -311,7 +313,8 @@ class BTSNet(torch.nn.Module):
             if self.sample_color:
                 sigma = mlp_output[..., :1]
                 sigma = F.softplus(sigma)
-                rgb, invalid_colors = self.sample_colors(xyz)                               # (n, nv, pts, 3)
+                with profiler.record_function("sample_colors"):
+                    rgb, invalid_colors = self.sample_colors(xyz)                               # (n, nv, pts, 3)
             else:
                 sigma = mlp_output[..., :1]
                 sigma = F.relu(sigma)
