@@ -1,0 +1,18 @@
+mono2: false
+encoder:
+  type: ResNetV1c
+  depth: 34
+  pretrained: open-mmlab://resnet34_v1c
+
+decoder:
+  type: FPNHead
+  in_channels: [64, 128, 256, 512]
+  in_index: [0, 1, 2, 3]
+  feature_strides: [4, 8, 16, 32]
+  channels: 128
+  dropout_ratio: 0.1
+  num_classes: 19
+  norm_cfg:
+    type: SyncBN
+    requires_grad: True
+  align_corners: False

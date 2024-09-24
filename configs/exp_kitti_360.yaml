@@ -31,7 +31,7 @@ model_conf:
         freq_factor: 1.5
         include_input: true
 
-    encoder:
+    backbone:
         type: "monodepth2"
         freeze: false
         pretrained: true
