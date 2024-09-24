@@ -1,0 +1,20 @@
+defaults:
+    - exp_kitti_360
+    # - model_conf/backbone: bisenetv2 # 3412 [n, c, 24, 80]
+    # - model_conf/backbone: convnext_upernet # 120841 [n, c, 48, 160]
+    - model_conf/backbone: default # 34892 [n, c, 192, 640] pyramid4
+    # - model_conf/backbone: r101_fcn # 66153 [n, c, 6, 20]
+    # - model_conf/backbone: r18_fcn # 20674 [n, c, 6, 20]
+    # - model_conf/backbone: r18_fpn # 12761 [n, c, 48, 160]
+    # - model_conf/backbone: r34_fcn # 30782 [n, c, 6, 20]
+    # - model_conf/backbone: r34_fpn # 22869 [n, c, 48, 160]
+    # - model_conf/backbone: r50_fcn # 47161 [n, c, 6, 20]
+    # - model_conf/backbone: r50_fpn # 28410 [n, c, 48, 160]
+    # - model_conf/backbone: swin_upernet # 58981 [n, c, 48, 160]
+    # - model_conf/backbone: swin_upernet_pretrained # 58981 [n, c, 48, 160]
+    # - model_conf/backbone: upernet_r50 # 64074 [n, c, 48, 160]
+    - _self_
+
+name: "kitti_360_mmseg"
+model: "bts"
+output_path: "out/kitti_360_mmseg"

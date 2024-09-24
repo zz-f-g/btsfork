@@ -1,0 +1,12 @@
+mono2: false
+encoder:
+  type: ResNetV1c
+  depth: 101
+  pretrained: open-mmlab://resnet101_v1c
+
+decoder:
+  type: FCNHead
+  in_channels: 2048
+  in_index: 3
+  channels: 512
+  concat_input: True

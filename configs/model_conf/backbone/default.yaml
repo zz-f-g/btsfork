@@ -1,0 +1,7 @@
+# default config for bts
+mono2: true
+d_out: 64
+freeze: false
+pretrained: true
+resnet_layers: 50
+num_ch_dec: [ 32,32,64,128,256]

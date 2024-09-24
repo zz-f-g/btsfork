@@ -8,7 +8,8 @@ from utils.timer import profiler
 import torch.nn.functional as F
 from torch import nn
 
-from models.common.backbones.backbone_util import make_backbone
+# from models.common.backbones.backbone_util import make_backbone
+from models.common.backbones import make_backbone
 from models.common.model.code import PositionalEncoding
 from models.common.model.mlp_util import make_mlp
 
@@ -31,7 +32,8 @@ class BTSNet(torch.nn.Module):
         if self.code_mode not in ["z", "distance"]:
             raise NotImplementedError(f"Unknown mode for positional encoding: {self.code_mode}")
 
-        self.encoder = make_backbone(conf["encoder"])
+        self.encoder = make_backbone(conf["backbone"])
+        self.feature_is_list = conf["backbone"].get("mono2", True)
         self.code_xyz = PositionalEncoding.from_conf(conf["code"], d_in=3)
 
         self.flip_augmentation = conf.get("flip_augmentation", False)
@@ -119,6 +121,8 @@ class BTSNet(torch.nn.Module):
             images_encoder = torch.flip(images_encoder, dims=(-1, ))
 
         image_latents_ms = self.encoder(images_encoder.view(n * nv, c, h, w))
+        if not self.feature_is_list:
+            image_latents_ms = [image_latents_ms]
 
         if do_flip:
             image_latents_ms = [torch.flip(il, dims=(-1, )) for il in image_latents_ms]
