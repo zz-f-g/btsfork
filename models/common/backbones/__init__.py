@@ -24,6 +24,7 @@ from mmpretrain.models import ConvNeXt
 # from mmseg.models import decode_heads
 
 from models.common.backbones.monodepth2 import Monodepth2
+from models.common.backbones.efficientnet import EffiBackbone
 
 
 class Network(nn.Module):
@@ -62,9 +63,13 @@ class Network(nn.Module):
 
 
 def make_backbone(conf):
-    if conf.get("mono2", True):
+    if conf.get("type") == "monodepth2":
         net = Monodepth2.from_conf(conf)
-    else:
+    elif conf.get("type") == "efficientnet":
+        net = EffiBackbone.from_conf(conf)
+    elif conf.get("mono2") == False:
         net = Network(conf)
+    else:
+        ValueError("Invalid backbone name")
 
     return net

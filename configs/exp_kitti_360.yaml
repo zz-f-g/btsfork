@@ -32,7 +32,7 @@ model_conf:
         include_input: true
 
     backbone:
-        type: "monodepth2"
+        type: "efficientnet"
         freeze: false
         pretrained: true
         resnet_layers: 50

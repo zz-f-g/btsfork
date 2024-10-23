@@ -293,7 +293,7 @@ class Monodepth2(nn.Module):
         :param x image (B, C, H, W)
         :return latent (B, latent_size, H, W)
         """
-        with profiler.record_function("monodepth2_forward"):
+        with profiler.record_function("backbone_forward"):
             x = torch.cat([x * .5 + .5], dim=1)
             image_features = self.encoder(x)
             outputs = self.decoder(image_features)
