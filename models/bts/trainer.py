@@ -23,7 +23,7 @@ from models.common.render import NeRFRenderer
 from models.bts.model.image_processor import make_image_processor, RGBProcessor
 from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
 from models.bts.model.models_bts import BTSNet
-from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, RandomRaySampler
+from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, RandomRaySampler, VPatchRaySampler
 from utils.base_trainer import base_training
 from utils.metrics import MeanMetric
 from utils.plotting import color_tensor
@@ -65,7 +65,7 @@ class BTSWrapper(nn.Module):
         if self.sample_mode == "random":
             self.train_sampler = RandomRaySampler(self.ray_batch_size, self.z_near, self.z_far, channels=self.train_image_processor.channels)
         elif self.sample_mode == "patch":
-            self.train_sampler = PatchRaySampler(self.ray_batch_size, self.z_near, self.z_far, self.patch_size, channels=self.train_image_processor.channels)
+            self.train_sampler = VPatchRaySampler(self.ray_batch_size, self.z_near, self.z_far, self.patch_size, channels=self.train_image_processor.channels)
         elif self.sample_mode == "image":
             self.train_sampler = ImageRaySampler(self.z_near, self.z_far, channels=self.train_image_processor.channels)
         else:

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from omegaconf import ListConfig
 
 from models.common.util import util
@@ -319,3 +320,159 @@ class ImageRaySampler(RaySampler):
             render_dict["rgb_gt"] = rgb_gt.view(n, v_in, self.height, self.width, channels)
 
         return render_dict
+
+
+class VPatchRaySampler(PatchRaySampler):
+    def __init__(self, ray_batch_size, z_near, z_far, patch_size, channels=3, device=0):
+        self.ray_batch_size = ray_batch_size
+        self.z_near = z_near
+        self.z_far = z_far
+        if isinstance(patch_size, int):
+            self.patch_size_x, self.patch_size_y = patch_size, patch_size
+        elif isinstance(patch_size, tuple) or isinstance(patch_size, list) or isinstance(patch_size, ListConfig):
+            self.patch_size_y = patch_size[0]
+            self.patch_size_x = patch_size[1]
+        else:
+            raise ValueError(f"Invalid format for patch size")
+        self.channels = channels
+        assert (ray_batch_size % (self.patch_size_x * self.patch_size_y)) == 0
+        self._patch_count = self.ray_batch_size // (self.patch_size_x * self.patch_size_y)
+        self.patch_coords = torch.stack(
+            torch.meshgrid(
+                [
+                    torch.arange(self.patch_size_x, device=device),
+                    torch.arange(self.patch_size_y, device=device),
+                ],
+                indexing="xy",
+            ),
+            dim=-1,
+        )  # (y, x, 2)
+
+    def sample(self, images, poses, projs):
+        n, v, c, h, w = images.shape
+        device = images.device
+
+        patch_coords_v = torch.randint(0, v, (n, self._patch_count), device=device)
+        patch_coords_v_inc = (
+            patch_coords_v + torch.arange(n, device=device)[:, None] * v
+        )
+        patch_coords_v_inc = patch_coords_v_inc.view(n * self._patch_count)
+        patch_coords_y = torch.randint(
+            0, h - self.patch_size_y, (n * self._patch_count,), device=device
+        )
+        patch_coords_x = torch.randint(
+            0, w - self.patch_size_x, (n * self._patch_count,), device=device
+        )
+
+        sample_coords = (
+            torch.stack([patch_coords_x, patch_coords_y], dim=-1)[:, None, None, :]
+            + self.patch_coords
+        )  # (n*p, y, x, 2)
+        sample_coords_norm = (
+            sample_coords
+            / torch.tensor([w - 1, h - 1], device=device)[None, None, None, :]
+            * 2
+            - 1
+        )
+
+        focals = projs[:, :, [0, 1], [0, 1]].view(n * v, 2)
+        centers = projs[:, :, [0, 1], [2, 2]].view(n * v, 2)
+        rays = util.gen_rays(
+            poses.view(n * v, 4, 4),
+            w,
+            h,
+            focal=focals,
+            c=centers,
+            z_near=self.z_near,
+            z_far=self.z_far,
+        ).view(n * v, h, w, 8)
+        rays_v = rays[patch_coords_v_inc].permute(0, 3, 1, 2)
+        images_v = images.view(n * v, c, h, w)[patch_coords_v_inc]
+        all_rays = (
+            F.grid_sample(
+                rays_v,
+                sample_coords_norm,
+                mode="nearest",
+                align_corners=True,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(n, self.ray_batch_size, 8)
+        )
+
+        all_rgb_gt = (
+            F.grid_sample(
+                images_v,
+                sample_coords_norm,
+                "nearest",
+                align_corners=True,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(n, self.ray_batch_size, 3)
+        )
+        return all_rays, all_rgb_gt
+
+
+class VNRPatchRaySampler(VPatchRaySampler):
+    def sample(self, images, poses, projs):
+        n, v, c, h, w = images.shape
+        device = images.device
+
+        idx_v = torch.randint(0, v, (self._patch_count,), device=device)
+        # patch_coords_v = torch.randint(0, v, (n, self._patch_count), device=device)
+        # patch_coords_v_inc = (
+        #     patch_coords_v + torch.arange(n, device=device)[:, None] * v
+        # )
+        # patch_coords_v_inc = patch_coords_v_inc.view(n * self._patch_count)
+        patch_coords_y = torch.randint(
+            0, h - self.patch_size_y, (n * self._patch_count,), device=device
+        )
+        patch_coords_x = torch.randint(
+            0, w - self.patch_size_x, (n * self._patch_count,), device=device
+        )
+
+        sample_coords = (
+            torch.stack([patch_coords_x, patch_coords_y], dim=-1)[:, None, None, :]
+            + self.patch_coords
+        )  # (n*p, y, x, 2)
+        sample_coords_norm = (
+            sample_coords
+            / torch.tensor([w - 1, h - 1], device=device)[None, None, None, :]
+            * 2
+            - 1
+        )
+
+        focals = projs[:, :, [0, 1], [0, 1]].view(n * v, 2)
+        centers = projs[:, :, [0, 1], [2, 2]].view(n * v, 2)
+        rays = util.gen_rays(
+            poses.view(n * v, 4, 4),
+            w,
+            h,
+            focal=focals,
+            c=centers,
+            z_near=self.z_near,
+            z_far=self.z_far,
+        ).view(n, v, h, w, 8)
+        rays_v = rays[:, idx_v, ...].view(n * self._patch_count, h, w, 8).permute(0, 3, 1, 2)
+        images_v = images[:, idx_v, ...].view(n * self._patch_count,c , h, w)
+        all_rays = (
+            F.grid_sample(
+                rays_v,
+                sample_coords_norm,
+                mode="nearest",
+                align_corners=True,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(n, self.ray_batch_size, 8)
+        )
+
+        all_rgb_gt = (
+            F.grid_sample(
+                images_v,
+                sample_coords_norm,
+                "nearest",
+                align_corners=True,
+            )
+            .permute(0, 2, 3, 1)
+            .reshape(n, self.ray_batch_size, 3)
+        )
+        return all_rays, all_rgb_gt
