@@ -18,7 +18,7 @@ from models.bts.model.ray_sampler import ImageRaySampler
 from utils.base_evaluator import base_evaluation
 from utils.metrics import MeanMetric
 from utils.projection_operations import distance_to_z
-
+from models.bts.model.pipeline import make_pipeline
 
 IDX = 0
 EPS = 1e-4
@@ -216,6 +216,16 @@ class BTSWrapper(nn.Module):
         super().__init__()
 
         self.renderer = renderer
+        self.ppl = make_pipeline(
+            self.renderer.net.encoder,
+            self.renderer.net,
+            self.renderer.renderer.n_coarse,
+            self.renderer.renderer.lindisp,
+            self.renderer.net.flip_augmentation,
+            self.training,
+            self.renderer.renderer.eval_batch_size,
+            self.renderer.renderer.noise_std,
+        )
 
         self.z_near = config["z_near"]
         self.z_far = config["z_far"]
@@ -279,10 +289,39 @@ class BTSWrapper(nn.Module):
         rays, _ = self.sampler.sample(None, poses[:, :1, :, :], projs[:, :1, :, :])
 
         ids_encoder = [0]
-        self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
-        self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_encoder, images_alt=images * .5 + .5)
-        self.renderer.net.set_scale(0)
-        render_dict = self.renderer(rays, want_weights=True, want_alphas=True)
+        images_ip = images * .5 + .5
+        # self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
+        # self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_encoder, images_alt=images * .5 + .5)
+        weights, rgb_final, depth_final, alpha, invalid, z_samp, rgbs = self.ppl(
+            images,
+            images_ip,
+            rays,
+            poses,
+            projs,
+            ids_encoder,
+            ids_encoder,
+        )
+        # self.renderer.net.grid_f_features = image_latents_ms
+        self.renderer.net.grid_f_Ks = projs[:, ids_encoder]
+        self.renderer.net.grid_f_poses_w2c = torch.inverse(poses)[:, ids_encoder]
+        self.renderer.net.grid_f_combine = None
+
+        self.renderer.net.grid_c_imgs = images[:, ids_encoder]
+        self.renderer.net.grid_c_Ks = projs[:, ids_encoder]
+        self.renderer.net.grid_c_poses_w2c = torch.inverse(poses)[:, ids_encoder]
+        self.renderer.net.grid_c_combine = None
+        render_dict = {}
+        render_dict["coarse"] = self.renderer.renderer._format_outputs(
+            (weights, rgb_final, depth_final, alpha, invalid, z_samp, rgbs),
+            n,
+            want_weights=True,
+            want_alphas=True,
+            want_z_samps=False,
+            want_rgb_samps=True,
+        )
+
+        # self.renderer.net.set_scale(0)
+        # render_dict = self.renderer(rays, want_weights=True, want_alphas=True)
         if "fine" not in render_dict:
             render_dict["fine"] = dict(render_dict["coarse"])
         render_dict = self.sampler.reconstruct(render_dict)

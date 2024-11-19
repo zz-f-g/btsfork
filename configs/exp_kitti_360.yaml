@@ -8,7 +8,7 @@ model: "bts"
 output_path: "out/kitti_360"
 
 num_epochs: 25
-batch_size: 16
+batch_size: 12
 
 save_best:
     metric: abs_rel
@@ -58,7 +58,7 @@ model_conf:
     frame_sample_mode: kitti360-mono
 
     sample_mode: patch
-    patch_size: 8
+    patch_size: 32
     ray_batch_size: 4096
 
     flip_augmentation: true

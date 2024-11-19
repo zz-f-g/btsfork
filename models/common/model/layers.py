@@ -30,7 +30,7 @@ class Conv3x3(nn.Module):
         super(Conv3x3, self).__init__()
 
         if use_refl:
-            self.pad = nn.ReflectionPad2d(1)
+            self.pad = nn.ReplicationPad2d(1)
         else:
             self.pad = nn.ZeroPad2d(1)
         self.conv = nn.Conv2d(int(in_channels), int(out_channels), 3)

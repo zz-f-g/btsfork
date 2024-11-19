@@ -5,7 +5,7 @@ defaults:
 
 name: "eval_lidar_occ"
 model: "bts_lidar"
-checkpoint: "out/kitti_360/pretrained"
+checkpoint: "out/kitti_360/kitti_360_backend-None-1_20241113-175252/training_checkpoint_204000.pt"
 
 
 log_every: 10
@@ -20,7 +20,7 @@ data:
     data_fisheye: false
     data_stereo: false
     data_fc: 1
-    is_preprocessed: false
+    is_preprocessed: true
 
 model_conf:
     arch: "BTSNet"
@@ -31,8 +31,8 @@ model_conf:
         freq_factor: 1.5
         include_input: true
 
-    encoder:
-        type: "monodepth2"
+    backbone:
+        type: "efficientnet"
         freeze: false
         pretrained: true
         resnet_layers: 50

@@ -24,10 +24,12 @@ from models.bts.model.image_processor import make_image_processor, RGBProcessor
 from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
 from models.bts.model.models_bts import BTSNet
 from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, RandomRaySampler, VPatchRaySampler
+from models.bts.model.ray_sampler_patch import ImagePatchRaySampler
 from utils.base_trainer import base_training
 from utils.metrics import MeanMetric
 from utils.plotting import color_tensor
 from utils.projection_operations import distance_to_z
+from models.bts.model.pipeline import make_pipeline
 
 
 class BTSWrapper(nn.Module):
@@ -35,6 +37,16 @@ class BTSWrapper(nn.Module):
         super().__init__()
 
         self.renderer = renderer
+        self.ppl = make_pipeline(
+            self.renderer.net.encoder,
+            self.renderer.net,
+            self.renderer.renderer.n_coarse,
+            self.renderer.renderer.lindisp,
+            self.renderer.net.flip_augmentation,
+            self.training,
+            32,
+            self.renderer.renderer.noise_std,
+        )
 
         self.z_near = config["z_near"]
         self.z_far = config["z_far"]
@@ -74,7 +86,8 @@ class BTSWrapper(nn.Module):
         if self.use_automasking:
             self.train_sampler.channels += 1
 
-        self.val_sampler = ImageRaySampler(self.z_near, self.z_far)
+        # self.val_sampler = ImageRaySampler(self.z_near, self.z_far)
+        self.val_sampler = ImagePatchRaySampler(self.z_near, self.z_far, self.patch_size, 192, 640)
 
         self.eval_nvs = eval_nvs
         if self.eval_nvs:
@@ -206,14 +219,38 @@ class BTSWrapper(nn.Module):
                 errors = compute_errors_l1ssim(reference_imgs, render_imgs).mean(-2).squeeze(-1).unsqueeze(2)
                 images_ip = torch.cat((images_ip, errors), dim=2)
 
+        """
         with profiler.record_function("trainer_encode-grid"):
             self.renderer.net.compute_grid_transforms(projs[:, ids_encoder], poses[:, ids_encoder])
             self.renderer.net.encode(images, projs, poses, ids_encoder=ids_encoder, ids_render=ids_render, images_alt=images_ip, combine_ids=combine_ids)
+        """
 
         sampler = self.train_sampler if self.training else self.val_sampler
 
         with profiler.record_function("trainer_sample-rays"):
             all_rays, all_rgb_gt = sampler.sample(images_ip[:, ids_loss] , poses[:, ids_loss], projs[:, ids_loss])
+
+        weights, rgb_final, depth_final, alpha, invalid, z_samp, rgbs = self.ppl(
+            images,
+            images_ip,
+            all_rays,
+            poses,
+            projs,
+            ids_encoder,
+            ids_render,
+            sampler._patch_count,
+            sampler.patch_size_y,
+            sampler.patch_size_x,
+        )
+        render_dict = {}
+        render_dict["coarse"] = self.renderer.renderer._format_outputs(
+            (weights, rgb_final, depth_final, alpha, invalid, z_samp, rgbs),
+            n,
+            want_weights=True,
+            want_alphas=True,
+            want_z_samps=False,
+            want_rgb_samps=True,
+        )
 
         data["fine"] = []
         data["coarse"] = []
@@ -242,8 +279,8 @@ class BTSWrapper(nn.Module):
                 data["rgb_gt"] = render_dict["rgb_gt"]
                 data["rays"] = render_dict["rays"]
         else:
-            with profiler.record_function("trainer_render"):
-                render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_rgb_samps=True)
+            # with profiler.record_function("trainer_render"):
+            #     render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_rgb_samps=True)
 
             if "fine" not in render_dict:
                 render_dict["fine"] = dict(render_dict["coarse"])

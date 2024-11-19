@@ -1,4 +1,6 @@
 import time
+import traceback
+import sys
 
 
 class Recorder:
@@ -13,7 +15,7 @@ class Recorder:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.end = time.time()
         Recorder.elapsed_time.update({self.fn: self.end - self.start})
-        return True
+        return False
 
 
 class profiler:
